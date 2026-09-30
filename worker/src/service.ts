@@ -5,6 +5,24 @@ const encoder = new TextEncoder();
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 const STARTUP_MS = 60_000;
 const GRACE_MS = 5_000;
+// The supervisor needs up to ~4 s to escalate a timeout and up to 5 s to drain a
+// noisy background job after a normal exit; the hard stop must not race either.
+export const HARD_DEADLINE_GRACE_MS = 15_000;
+// hermes-exec closes its stdout at most DRAIN_GRACE (5 s) after Bash exits. This is
+// the Worker-side backstop if a stream is still open well after the exit status.
+export const POST_EXIT_STREAM_MS = 7_000;
+const SUPERVISOR = "/usr/local/bin/hermes-exec";
+
+/** Reject with `error` if `operation` has not settled within `ms`. */
+async function bounded<T>(operation: Promise<T>, ms: number, error: () => Error): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(error()), Math.max(1, ms)); }),
+    ]);
+  } finally { if (timer) clearTimeout(timer); }
+}
 
 interface ActiveCommand {
   id: string;
@@ -244,6 +262,22 @@ export class SandboxService<S = unknown, I = string> {
     }
   }
 
+  /** Stop one command's process group without discarding the workspace.
+   * Destroys the container only if the targeted kill itself cannot run (the
+   * container is wedged), because an unkillable command would otherwise hold
+   * the workspace lock and keep billing indefinitely.
+   */
+  private async stopCommand(requestId: string, reason: string): Promise<void> {
+    if (!this.container.running) return;
+    try {
+      const killer = await bounded(
+        this.container.exec([SUPERVISOR, "--kill", requestId], { stdout: "ignore", stderr: "ignore" }),
+        GRACE_MS, () => new Error("kill request hung"));
+      if (await bounded(killer.exitCode, GRACE_MS, () => new Error("kill did not finish")) === 0) return;
+    } catch { /* fall through to the last resort */ }
+    await this.container.destroy(reason);
+  }
+
   private commandStream(active: ActiveCommand, input: ExecRequest, config: WorkspaceConfig): ReadableStream<Uint8Array> {
     let disconnected = false;
     let wakeAbort: (() => void) | undefined;
@@ -258,20 +292,22 @@ export class SandboxService<S = unknown, I = string> {
         };
         const heartbeat = setInterval(() => send({ type: "heartbeat" }), 10_000);
         let hardTimer: ReturnType<typeof setTimeout> | undefined;
+        let stuckTimer: ReturnType<typeof setTimeout> | undefined;
         const pump = async () => {
           try {
             await this.ensureRunning(config);
             if (active.cancelled || disconnected) throw new ApiError(409, "command_cancelled", "Command cancelled");
             const hardDeadline = new Promise<never>((_, reject) => {
               hardTimer = setTimeout(() => {
-                // Cover the native exec request itself, not just the resulting process.
+                // Covers a hung native exec request as well as the process itself. Stop only
+                // this command's process group so the workspace (and its unsaved files) survive.
                 active.cancelled = true;
-                const fail = () => reject(new ApiError(504, "hard_timeout", "Sandbox stopped at hard deadline"));
-                void this.container.destroy("Command exceeded its hard deadline").then(fail, fail);
-              }, input.timeout * 1000 + GRACE_MS);
+                const fail = () => reject(new ApiError(504, "hard_timeout", "Command stopped at hard deadline"));
+                void this.stopCommand(input.request_id, "Command could not be stopped at its hard deadline").then(fail, fail);
+              }, input.timeout * 1000 + HARD_DEADLINE_GRACE_MS);
             });
             const launched = this.container.exec(
-              ["/usr/local/bin/hermes-exec", String(input.timeout), input.login ? "-lc" : "-c", input.command],
+              [SUPERVISOR, "--id", input.request_id, String(input.timeout), input.login ? "-lc" : "-c", input.command],
               { cwd: config.cwd, stdout: "pipe", stderr: "combined", ...(input.stdin !== null ? { stdin: "pipe" as const } : {}) },
             );
             // A late native response after cancellation must not leave a new process alive.
@@ -290,9 +326,10 @@ export class SandboxService<S = unknown, I = string> {
                 finally { writer.releaseLock(); }
               }
             })();
+            let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
             const reading = (async () => {
               if (!process.stdout) throw new ApiError(503, "exec_failed", "Missing stdout stream");
-              const reader = process.stdout.getReader();
+              reader = process.stdout.getReader();
               const decoder = new TextDecoder();
               let characters = 0;
               const output = (value: string) => {
@@ -319,10 +356,22 @@ export class SandboxService<S = unknown, I = string> {
                 output(decoder.decode());
               } finally { reader.releaseLock(); }
             })();
+            void reading.catch(() => {});
+            // Once the supervisor has exited, its stdout closes within its own drain cap.
+            // If the native stream still does not end, stop waiting instead of hanging the
+            // workspace lock until the hard deadline (the Crabbox-style bounded drain).
+            const streamEnded = process.exitCode.then(async code => {
+              const finished = await Promise.race([
+                reading.then(() => true),
+                new Promise<false>(resolve => { stuckTimer = setTimeout(() => resolve(false), POST_EXIT_STREAM_MS); }),
+              ]);
+              if (!finished) { try { await reader?.cancel(); } catch { /* already closed */ } }
+              return code;
+            });
             const results = await Promise.race([
-              Promise.all([reading, writing, process.exitCode]), hardDeadline, aborted,
+              Promise.all([streamEnded, writing]), hardDeadline, aborted,
             ]);
-            send({ type: "exit", exit_code: results[2] });
+            send({ type: "exit", exit_code: results[0] });
           } catch (error) {
             if (active.process) {
               try { active.process.kill(15); } catch { /* process already gone */ }
@@ -334,12 +383,14 @@ export class SandboxService<S = unknown, I = string> {
                 new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), GRACE_MS); }),
               ]);
               if (timer) clearTimeout(timer);
-              if (!settled) await this.container.destroy("Failed command did not terminate");
+              // Stop the recorded process group; keep the workspace unless that fails.
+              if (!settled) await this.stopCommand(input.request_id, "Failed command did not terminate");
             }
             send({ type: "error", code: error instanceof ApiError ? error.code : "exec_failed" });
           } finally {
             clearInterval(heartbeat);
             if (hardTimer) clearTimeout(hardTimer);
+            if (stuckTimer) clearTimeout(stuckTimer);
             if (this.active === active) this.active = null;
             try { await this.touch(); } catch { /* existing native inactivity failsafe remains */ }
             closed = true;

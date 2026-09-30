@@ -13,12 +13,11 @@ export interface ProcessPort {
 export interface ContainerPort<Snapshot = unknown, Image = string> {
   readonly running: boolean;
   readonly images: Record<string, Image>;
+  // Mirrors Cloudflare's ContainerStartupOptions: image and containerSnapshot are mutually exclusive.
   start(options: {
-    image?: Image;
-    containerSnapshot?: Snapshot;
     instance?: InstanceType;
     enableInternet: boolean;
-  }): void;
+  } & ({ image: Image; containerSnapshot?: never } | { image?: never; containerSnapshot?: Snapshot })): void;
   exec(command: string[], options?: {
     stdin?: "pipe";
     stdout?: "pipe" | "ignore";

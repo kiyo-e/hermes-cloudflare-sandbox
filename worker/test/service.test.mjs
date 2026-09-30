@@ -211,25 +211,4 @@ test("delete requires explicit confirmation", async () => {
   assert.equal(storage.data.size, 0);
 });
 
-test("hard deadline also bounds a hanging native process-start request", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  const { service, container } = await setup();
-  const original = container.exec.bind(container);
-  let pendingStart = false;
-  container.exec = async (command, options) => {
-    if (command[0] === "/usr/local/bin/hermes-exec") {
-      pendingStart = true;
-      return new Promise(() => {});
-    }
-    return original(command, options);
-  };
-  const response = await service.fetch(request("exec", execution({ timeout: 0.1 })));
-  const result = collect(response);
-  for (let i = 0; i < 20 && !pendingStart; i++) await new Promise(resolve => setImmediate(resolve));
-  assert.equal(pendingStart, true);
-  t.mock.timers.tick(5101);
-  const events = await result;
-  assert.equal(events.at(-1).code, "hard_timeout");
-  assert.equal(container.running, false);
-  assert.equal(events.some(e => e.type === "exit"), false);
-});
+// Hard-deadline and stream-drain behavior: see deadline.test.mjs.

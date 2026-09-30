@@ -86,3 +86,15 @@ One foreground command or lifecycle transition can be active per workspace.
 Conflicting operations return 409. Snapshotting does not freeze background
 writers, and snapshots do not contain running processes. Stop application-level
 writers before manually checkpointing data that requires consistency.
+
+Background jobs started by a command (`cmd &`, `nohup ... &`) keep running after
+the command exits, and do not hold the response open. After the command exits,
+output already produced is always delivered; further background output is
+collected until it pauses for 0.3 s, for at most 5 s. Redirect background output
+to a file if you need all of it. This bounded drain follows openclaw/crabbox.
+
+A command that exceeds `timeout` receives SIGTERM, then SIGKILL 2 s later, across
+its process group. If the command still has not ended 15 s after `timeout`, the
+Worker stops that process group by request ID and returns `hard_timeout`. The
+workspace is kept. The container is destroyed only if that targeted stop cannot
+run.
