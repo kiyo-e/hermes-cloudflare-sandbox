@@ -1,10 +1,12 @@
 # Hermes Cloudflare Sandbox
 
-Hermes Agentのterminal backendを、CloudflareのDurable Objectが管理するContainerへ接続する外部プラグインです。Hermes本体はローカル環境または通常のサーバー上に残します。
+**English** | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
-**ステータス：初期実装です。実際のCloudflareアカウントとHermesで、基本の操作を確認しました。公式対応を意味するものではありません。** 検証の範囲は[VALIDATION.md](VALIDATION.md)を参照してください。
+A third-party plugin that runs the [Hermes Agent](https://github.com/NousResearch/hermes-agent) terminal backend inside a Cloudflare Container managed by a Durable Object. Hermes itself stays on your machine or server; only command execution moves to Cloudflare.
 
-2026年9月30日に公開された`durable_object` scheduling policyと、ネイティブの`ctx.container` APIを対象にしています。従来の`Container`クラスや旧`Sandbox`クラスには依存しません。これらのCloudflare機能はpublic betaであるため、導入先での互換性確認が必要です。
+**Status: early implementation.** The basic operations have been verified against a real Cloudflare account and a real Hermes install. See [VALIDATION.md](VALIDATION.md) for exactly what was tested. This is not an official Hermes or Cloudflare plugin.
+
+It targets the `durable_object` scheduling policy and the native `ctx.container` API released on 2026-09-30. It does not depend on the older `Container` class or the legacy `Sandbox` class. These Cloudflare features are in public beta, so check compatibility in your own account.
 
 ```text
 Hermes Agent
@@ -14,26 +16,32 @@ Hermes Agent
                  └─ Cloudflare Worker
                       └─ HermesSandbox Durable Object
                            └─ ctx.container
-                                ├─ 非rootのBash / Python / Node.js
+                                ├─ non-root Bash / Python / Node.js
                                 ├─ /workspace
                                 └─ filesystem snapshot / restore
 ```
 
-## 実装している機能
+## Features
 
-Hermesの公式provider登録、認証付きの実行API、標準入力、UTF-8のストリーミング出力、終了コード、実行時間の制限、キャンセル、名前付きイメージ、実行時のインスタンス選択、ワークスペースのsnapshot保存と復元を実装しています。アイドル時にはDurable Objectのalarmで保存してから停止します。
+- Registers as an official Hermes terminal environment provider.
+- Authenticated execution API with stdin, streamed UTF-8 output, exit codes, time limits and cancellation.
+- Named images and per-workspace instance types.
+- Workspace snapshots and restore. An idle workspace is checkpointed by a Durable Object alarm, then stopped.
+- In our tests, starting or restoring a workspace added about 1–2 seconds to the first command.
 
-コマンドのラッピング、CWDの追跡、Hermesが対応するshell snapshotの処理は、Hermesの`BaseEnvironment`へ委譲します。tmuxを別途重ねる構成ではありません。これは「同じBashのPIDや任意のメモリ状態を永久に維持する」という保証ではなく、shell stateの範囲は導入先のHermesの実装に従います。
+Command wrapping, CWD tracking and shell snapshots are delegated to Hermes' own `BaseEnvironment`; there is no extra tmux layer. This does not keep the same Bash PID or in-memory state forever. How much shell state carries over depends on your Hermes version.
 
-`terminal`を利用するファイル操作やコード実行を接続する設計ですが、Hermes全体、ブラウザー、すべての外部ツールをCloudflare内へ移すものではありません。ホスト側のホーム、skills、認証情報を自動で同期する機能も含めていません。
+The plugin connects `terminal`, file tools and `execute_code`. It does not move the rest of Hermes (the browser, other external tools) into Cloudflare, and it does not sync your host home directory, skills or credentials into the container.
 
-## 必要な環境
+## Requirements
 
-Hermesには`TerminalEnvironmentProvider`と`BaseEnvironment._run_bash()`を備えたバージョンが必要です。Python 3.11以上、Node.js 22以上、Docker、および新しいContainers APIを利用できるCloudflareアカウントを用意してください。課金が発生する可能性があります。
+- A Hermes version that provides `TerminalEnvironmentProvider` and `BaseEnvironment._run_bash()`.
+- Python 3.11+, Node.js 22+ and Docker.
+- A Cloudflare account with access to the new Containers API. **Running containers is billed.**
 
-Workerの依存関係はWrangler 4系とTypeScriptです。`worker/package-lock.json`で版を固定しているため、`npm ci`で導入してください。実際の型生成と型チェックを通してからデプロイしてください。
+Worker dependencies (Wrangler 4 and TypeScript) are pinned by `worker/package-lock.json`. Install them with `npm ci`, and run the real type generation and type check before deploying.
 
-## 1. Workerをデプロイする
+## 1. Deploy the Worker
 
 ```bash
 git clone https://github.com/kiyo-e/hermes-cloudflare-sandbox.git
@@ -45,24 +53,24 @@ npx wrangler login
 npm run deploy
 ```
 
-`npm run typecheck`は`wrangler types`を実行し、実際のCloudflareの型に対してproduction entry pointをチェックします。新しいscheduling policyや`ctx.container.exec()`の型が見つからない場合は、旧SDKへ置き換えず、Wranglerと利用するCloudflare機能を確認してください。
+`npm run typecheck` runs `wrangler types` and checks the production entry point against Cloudflare's real types. If the new scheduling policy or `ctx.container.exec()` types are missing, update Wrangler and check your Cloudflare features; do not switch to an older SDK.
 
-最初のデプロイでは認証secretが未設定なので、WorkerはAPIアクセスを拒否します。その状態で新しいランダムなsecretを生成します。
+Right after the first deploy no secret is set, so the Worker rejects every API call. Generate a new random secret and store it as a Worker secret:
 
 ```bash
 python -c 'import secrets; print(secrets.token_urlsafe(48))'
 npx wrangler secret put SANDBOX_API_TOKEN
 ```
 
-生成した値をプロンプトへ入力します。同じ値を後でHermesの`HERMES_CF_TOKEN`へ設定します。secretはリポジトリ、`wrangler.jsonc`、Containerイメージへ書き込まないでください。CloudflareアカウントのAPI tokenを、この実行用tokenとして流用しないでください。
+Paste the generated value at the prompt. You will set the same value as `HERMES_CF_TOKEN` for Hermes. Never commit the secret, put it in `wrangler.jsonc` or bake it into the container image, and do not reuse a Cloudflare account API token for this purpose.
 
-`worker/wrangler.jsonc`では、SQLiteのDurable Object、新しいscheduling policy、名前付きイメージ`hermes`を設定しています。`standard-1`が既定のインスタンスで、`lite`と`standard-1`のみを許可します。ほかのサイズを使用する場合は、管理者が`ALLOWED_INSTANCE_TYPES`を変更してください。旧policy用の`max_instances`や`instance_type`を追加しないでください。
+`worker/wrangler.jsonc` configures a SQLite-backed Durable Object, the new scheduling policy and a named image `hermes`. The default instance type is `standard-1`; only `lite` and `standard-1` are allowed. To allow other sizes, the operator changes `ALLOWED_INSTANCE_TYPES`. Do not add the old policy's `max_instances` or `instance_type`.
 
-`ENABLE_INTERNET=true`は、gitやパッケージの取得を許可するための明示的な設定です。外部通信を禁止する場合は`false`へ変更して再デプロイしてください。
+`ENABLE_INTERNET=true` explicitly allows outbound traffic so that git and package managers work. Set it to `false` and redeploy to block outbound access.
 
-## 2. Hermesへプラグインをインストールする
+## 2. Install the plugin in Hermes
 
-使用するHermesプロファイルのpluginsディレクトリへ、このリポジトリを配置します。
+Clone this repository into the `plugins` directory of the Hermes profile you want to use:
 
 ```bash
 mkdir -p "${HERMES_HOME:-$HOME/.hermes}/plugins"
@@ -70,11 +78,11 @@ git clone https://github.com/kiyo-e/hermes-cloudflare-sandbox.git \
   "${HERMES_HOME:-$HOME/.hermes}/plugins/cloudflare-sandbox"
 ```
 
-Hermesを起動するプロセスの環境変数、または対象プロファイルの`.env`へ、次の値を設定します。既存の`.env`を上書きしないでください。`.env.example`に任意設定も記載しています。
+Add the following to the environment of the Hermes process or to that profile's `.env`. Append; do not overwrite an existing `.env`. Optional settings are listed in `.env.example`.
 
 ```dotenv
 HERMES_CF_ENDPOINT=https://your-worker.your-subdomain.workers.dev
-HERMES_CF_TOKEN=ここには生成したsecretを設定します
+HERMES_CF_TOKEN=the-secret-you-generated
 HERMES_CF_NAMESPACE=personal
 HERMES_CF_IMAGE=hermes
 ```
@@ -86,65 +94,65 @@ hermes config set terminal.cwd /workspace
 hermes config set terminal.container_persistent true
 ```
 
-**プラグイン名は`cloudflare-sandbox`、backend名は`cloudflare_sandbox`です。** 設定を変更した後はHermesを再起動してください。
+**The plugin name is `cloudflare-sandbox`; the backend name is `cloudflare_sandbox`.** Restart Hermes after changing the configuration.
 
-Python側の通信処理に追加の外部パッケージは不要です。`pip install`だけではHermesへのプラグイン登録にはなりません。上記のディレクトリ配置と`hermes plugins enable`を使用してください。
+The Python client needs no extra packages. `pip install` alone does not register the plugin with Hermes; use the directory layout and `hermes plugins enable` shown above. Consider trying it in a dedicated profile first (`hermes profile create <name> --clone`), so your usual profile keeps its local terminal.
 
-## 3. 実環境で確認する
+## 3. Verify in your environment
 
-Hermesを実行しているPython環境で、まず実際のインターフェースを確認します。
+First, check the interfaces of the Hermes you are running, from its Python environment:
 
 ```bash
 python scripts/check_hermes_contract.py --hermes-source /path/to/hermes-agent
 ```
 
-続いて、Workerの接続情報を環境変数へ設定したシェルで、独立したワークスペースを作って検証します。
+Then, in a shell with the Worker endpoint and token exported, run the live smoke test against a fresh workspace:
 
 ```bash
 python scripts/smoke.py --live
 ```
 
-このスクリプトは、認証、標準入力、日本語、非ゼロの終了コード、タイムアウト、ファイルの保存、停止、snapshotからの復元を確認します。一時的なContainerとsnapshotを作成するため課金される可能性があります。既存の`HERMES_CF_WORKSPACE`は使用しません。最後にテスト専用のワークスペースを削除しますが、Cloudflare側のsnapshot自体はTTLまで残ることがあります。
+It checks authentication, stdin, non-ASCII text, non-zero exit codes, timeouts, saving files, stopping, and restoring from a snapshot. It creates a temporary container and snapshot, which may be billed. It never uses your `HERMES_CF_WORKSPACE`. The test workspace is deleted at the end, but Cloudflare may keep the snapshot data until its TTL.
 
-最後にHermesから`pwd`、ファイルの書き込みと読み出し、`execute_code`を確認してください。shell stateの引き継ぎについても、利用するHermesのバージョンで確認してください。2026-10-01に、このライブ確認を実行しました。
+Finally, from Hermes, check `pwd`, writing and reading a file, and `execute_code`, and check how shell state carries over in your Hermes version.
 
-## ワークスペースの識別と永続化
+## Workspace identity and persistence
 
-`container_persistent: true`では、namespaceとtask IDをハッシュ化して同じDurable Objectへ接続します。別のtask IDから同じプロジェクトを開く場合は、例えば`HERMES_CF_WORKSPACE=my-project`を明示してください。固定しない場合は、新しいtask IDに対して別のワークスペースが作られます。
+With `container_persistent: true`, the namespace and the task ID are hashed into a stable Durable Object. To reach the same project from a different task ID, set a fixed workspace, for example `HERMES_CF_WORKSPACE=my-project`. Without it, each new task ID gets its own workspace.
 
-namespaceを省略した場合は、プラグイン内では対象のHermes homeを使用します。別の端末から同じワークスペースへ接続する場合は、同じnamespace、workspace、Workerの接続先を明示してください。同じ固定workspaceを複数のHermesプロセスから同時に使わないでください。Workerは同時の前景コマンドを拒否しますが、複数のクライアントのshell stateを共有・調停する機能ではありません。
+If no namespace is set, the plugin uses the Hermes home of the profile. To reach the same workspace from another machine, set the same namespace, workspace and Worker endpoint explicitly. Do not use one fixed workspace from several Hermes processes at the same time. The Worker rejects concurrent foreground commands, but it does not share or reconcile shell state between clients.
 
-`container_persistent: false`では毎回ランダムな識別子を付け、終了時にContainerとDurable Object内の管理情報を削除します。snapshotは作成しません。
+With `container_persistent: false`, every environment gets a random identifier. On exit, the container and the Durable Object's records are deleted, and no snapshot is taken.
 
-永続化する場合の終了処理は、`sync`、snapshot作成、handleのDurable Object storageへの保存、Containerの停止という順序です。snapshotやhandleの保存に失敗したときは、そのエラーを返し、停止せずに再試行用のalarmを設定します。既定では、最後のコマンドから約10分間のアイドル状態でも同じ保存処理を行います。さらに長いネイティブのinactivity timeoutは、保存処理が失敗した場合も含む最終的な停止用の仕組みであり、保存を保証する機能ではありません。
+A persistent workspace is released in this order: `sync`, create a snapshot, store its handle in Durable Object storage, then stop the container. If the snapshot or the handle cannot be saved, the error is returned, the container keeps running, and an alarm retries the save. By default the same save runs after about 10 minutes without commands. A longer native inactivity timeout is only a last-resort stop, including when saving fails; it does not guarantee a save.
 
-**snapshotはバックアップの代わりではありません。** ファイルシステムのみを保存し、実行中のPID、メモリ、外部サービス、マウントした別ストレージの状態は保存しません。Cloudflareの仕様上、作成または復元から30日間という有効期限があり、基になったイメージにも結び付いています。イメージを更新しただけでは既存snapshotの環境は更新されません。長期保存が必要な成果物は、別途gitなどへ保存してください。
+**Snapshots are not backups.** They contain the filesystem only, not running processes, memory, external services or separately mounted storage. Background jobs therefore do not survive a checkpoint. Cloudflare expires snapshots 30 days after they are created or restored, and a snapshot is tied to the image it came from; updating the image does not update environments restored from existing snapshots. Keep anything you need long term in git or other storage.
 
-クラッシュや強制停止では、最後の成功したsnapshot以降の変更が失われる可能性があります。初回起動後にsnapshotなしでContainerが失われた場合は、空の環境を黙って作り直さず、`workspace_lost`を返します。復元できない場合は原因を確認して、新しいworkspace名を使用してください。
+After a crash or a forced stop, changes since the last successful snapshot may be lost. If a container is lost after its first start with no snapshot, the Worker does not silently start an empty replacement; it returns `workspace_lost`. Investigate, then use a new workspace name.
 
-## 設定の範囲と制限
+## Configuration scope and limits
 
-| 設定・機能 | この実装の扱い |
+| Setting / feature | Behavior in this plugin |
 | --- | --- |
-| `terminal.container_persistent` | snapshot保存の有効・無効を切り替えます。 |
-| `terminal.cwd` | Container内の絶対パスとして使用します。既定は`/workspace`です。 |
-| `HERMES_CF_IMAGE` | `wrangler.jsonc`でデプロイ済みの名前付きイメージを指定します。 |
-| `HERMES_CF_INSTANCE` | 管理者が許可したCloudflareのインスタンス名を指定します。 |
-| Hermesの汎用image・CPU・メモリ・disk設定 | 自動変換しません。上記の専用設定を使用してください。 |
-| Hermesのホスト側の環境変数・ホーム | 自動ではContainerへ転送・同期しません。 |
-| Cloudflare Access | client IDとclient secretをHTTPヘッダーに設定できます。Access policy自体の作成は含みません。 |
+| `terminal.container_persistent` | Turns snapshot-based persistence on or off. |
+| `terminal.cwd` | An absolute path inside the container. Defaults to `/workspace`. |
+| `HERMES_CF_IMAGE` | A named image deployed through `wrangler.jsonc`. |
+| `HERMES_CF_INSTANCE` | A Cloudflare instance type allowed by the operator. |
+| Hermes' generic image / CPU / memory / disk settings | Not translated. Use the settings above. |
+| Host environment variables and home directory | Not forwarded or synced into the container. |
+| Cloudflare Access | A client ID and secret can be sent as HTTP headers. Creating the Access policy is not included. |
 
-単一の信頼する所有者向けのbridgeです。bearer tokenの所持者は任意のshellコマンドを実行し、全workspaceを操作できます。workspace名は認可の境界ではありません。複数の信頼しない利用者へ提供するためのユーザー別認可、全体の同時実行数制限、料金上限の実装は含みません。公開する場合はAccessなどのアクセス制御と運用上の利用制限を追加してください。
+This bridge is for a single trusted owner. Anyone holding the bearer token can run any shell command and operate on every workspace; workspace names are not an authorization boundary. Per-user authorization, global concurrency limits and spending caps are not included. If you expose the Worker, add access control such as Cloudflare Access and operational usage limits.
 
-HTTPSを必須にし、リダイレクトを拒否します。HTTPはローカルテストのloopbackだけに限定しています。認証secretはWorkerとHermes側に置き、Containerへは渡しません。秘密情報をContainerのファイルへ書き込むとsnapshotにも含まれるため、必要最小限にしてください。危険なコマンドに対するHermes側の承認を意図的に無効化する設定にはしていません。
+HTTPS is required and redirects are refused; plain HTTP is only accepted on loopback for local tests. The token lives in the Worker and in Hermes and is never passed into the container. Anything written to files in the container ends up in snapshots, so keep secrets there to a minimum. Hermes' approval prompts for dangerous commands are deliberately left on, so in unattended runs such as `hermes chat -q`, `execute_code` is blocked unless you approve it by configuration or `--yolo`.
 
-コマンド文字列は64 KiB、リクエストは1 MiB、実行結果はJavaScriptの文字列長で2,000,000単位、実行時間は最大900秒に制限しています。標準入力はUTF-8のテキストで、NUL文字は受け付けません。大きなファイルは分割または別の転送手段を使用してください。出力の上限に達した場合はエラーとし、切り捨てたデータを正常なファイル内容として返しません。stdoutとstderrは統合されます。
+Limits: 64 KiB per command string, 1 MiB per request, 2,000,000 JavaScript string units of output, and 900 seconds per command. stdin is UTF-8 text without NUL characters; split large files or use another transfer method. Output over the limit is an error; truncated data is never returned as if it were the full file. stdout and stderr are merged.
 
-通信が切れた場合でもコマンドがすでに実行されている可能性があるため、自動再実行はしません。直近64件のrequest IDを保存し、同じIDの再送を拒否しますが、これは無期限のexactly-once保証ではありません。エラー後には副作用を確認してください。
+If the connection drops, the command may already have run, so nothing is retried automatically. The Worker remembers the last 64 request IDs and rejects a replay of the same ID, but this is not an unlimited exactly-once guarantee. Check for side effects after an error.
 
-タイムアウトとキャンセルは、Container内のsupervisorがBashのprocess groupへシグナルを送って処理します。停止に応答しない場合はWorker側がContainerを強制停止する経路もあります。このsupervisor自体を、悪意のあるプログラムに対する独立したセキュリティ境界としては扱わないでください。バックグラウンドのプロセスもContainerがアイドル停止した後には継続しません。
+Timeouts and cancellation are handled by a supervisor inside the container that signals Bash's process group: SIGTERM, then SIGKILL 2 seconds later. If a command still has not ended 15 seconds after its timeout, the Worker stops that command's process group by request ID and keeps the workspace; the container is destroyed only if that targeted stop cannot run. Background jobs (`cmd &`) keep running after the command returns and do not hold the response open. The supervisor is resource management, not a security boundary against code that deliberately escapes its process group. The output-draining design follows [openclaw/crabbox](https://github.com/openclaw/crabbox) (MIT).
 
-## 開発とテスト
+## Development and tests
 
 ```bash
 python -m pip install -e '.[test]'
@@ -155,11 +163,11 @@ npm test
 npm run typecheck
 ```
 
-Workerの単体テストはContainerとDurable Object storageのテスト用オブジェクトを使用します。`npm test`でcoreのTypeScriptコンパイルも行いますが、それだけではproduction entry pointと実際のCloudflareの型の整合性は検証しません。`npm run typecheck`とライブテストを別途実行してください。
+The Worker unit tests use test doubles for the container and Durable Object storage. `npm test` also compiles the core TypeScript, but it does not check the production entry point against Cloudflare's real types; run `npm run typecheck` and the live test for that.
 
-GitHub ActionsにはPythonテスト、Workerテスト、Wranglerの型生成と型チェック、Dockerのビルドと起動確認を設定しています。自動デプロイやCloudflare認証情報の登録は行いません。Actions自体はまだ実行していません。
+GitHub Actions runs the Python tests, the Worker tests, Wrangler type generation and type check, and a Docker build and start check. It never deploys and holds no Cloudflare credentials.
 
-## 参照した公式インターフェース
+## Official interfaces referenced
 
 - [Hermes Terminal Environment Provider Plugins](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/terminal-environment-plugin.md)
 - [Hermes BaseEnvironment](https://github.com/NousResearch/hermes-agent/blob/main/tools/environments/base.py)
@@ -168,4 +176,4 @@ GitHub ActionsにはPythonテスト、Workerテスト、Wranglerの型生成と�
 - [Cloudflare Scheduling Policies](https://developers.cloudflare.com/containers/configuration/scheduling-policy/)
 - [Cloudflare Snapshots](https://developers.cloudflare.com/containers/guides/snapshots/)
 
-このプロジェクトはHermesまたはCloudflareによる公式のプラグインではありません。
+This project is not an official plugin of Hermes or Cloudflare.
