@@ -31,7 +31,7 @@ Hermesの公式provider登録、認証付きの実行API、標準入力、UTF-8�
 
 Hermesには`TerminalEnvironmentProvider`と`BaseEnvironment._run_bash()`を備えたバージョンが必要です。Python 3.11以上、Node.js 22以上、Docker、および新しいContainers APIを利用できるCloudflareアカウントを用意してください。課金が発生する可能性があります。
 
-Workerの依存関係はWrangler 4系とTypeScriptです。新APIが利用できる最新のWranglerをインストールし、実際の型生成と型チェックを通してからデプロイしてください。作成環境ではnpmの取得ができなかったため、未検証のlockfileは同梱していません。初回の検証後に生成された`worker/package-lock.json`をコミットして固定してください。
+Workerの依存関係はWrangler 4系とTypeScriptです。`worker/package-lock.json`で版を固定しているため、`npm ci`で導入してください。実際の型生成と型チェックを通してからデプロイしてください。
 
 ## 1. Workerをデプロイする
 
