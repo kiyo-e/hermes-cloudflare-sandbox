@@ -56,6 +56,18 @@ export class SandboxService<S = unknown, I = string> {
     await this.storage.setAlarm(Date.now() + this.idleMs);
   }
 
+  /** Call from the Durable Object constructor (inside blockConcurrencyWhile).
+   * The inactivity timeout belongs to the Durable Object instance: when the
+   * object is re-created while its container keeps running, the timeout must
+   * be set again, or Cloudflare stops the container shortly after the object
+   * goes idle — before the alarm can checkpoint it. The native API rejects the
+   * call while no container is running, so it is skipped then; ensureRunning()
+   * sets it right after start().
+   */
+  async restoreInactivityTimeout(): Promise<void> {
+    if (this.container.running) await this.container.setInactivityTimeout(this.inactivityMs);
+  }
+
   private async config(): Promise<WorkspaceConfig> {
     const value = await this.storage.get<WorkspaceConfig>("config");
     if (!value) throw new ApiError(404, "workspace_missing", "Initialize the workspace first");
@@ -207,7 +219,15 @@ export class SandboxService<S = unknown, I = string> {
         await this.storage.deleteAll();
       }
     } catch (error) {
+      if (!this.container.running) {
+        // Nothing is left to checkpoint; retrying would wake the object every minute forever.
+        console.error("workspace release failed with no running container; not retrying",
+                      error instanceof Error ? error.message : String(error));
+        await this.storage.deleteAlarm();
+        throw error;
+      }
       // A failed snapshot must NOT fall through to destroy(). Keep data, retry the alarm.
+      console.error("workspace release failed; keeping compute and retrying", error instanceof Error ? error.message : String(error));
       await this.storage.setAlarm(Date.now() + 60_000);
       throw error;
     }
@@ -224,7 +244,14 @@ export class SandboxService<S = unknown, I = string> {
       await this.storage.setAlarm(last + this.idleMs);
       return;
     }
-    await this.exclusive(() => this.release());
+    console.log("idle alarm: checkpointing workspace", JSON.stringify({ running: this.container.running }));
+    try {
+      await this.exclusive(() => this.release());
+    } catch (error) {
+      // A thrown alarm is retried by the platform; with no container there is nothing to retry.
+      if (!this.container.running) return;
+      throw error;
+    }
   }
 
   private async cancel(id: string): Promise<Response> {

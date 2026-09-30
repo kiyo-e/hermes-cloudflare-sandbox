@@ -212,3 +212,26 @@ test("delete requires explicit confirmation", async () => {
 });
 
 // Hard-deadline and stream-drain behavior: see deadline.test.mjs.
+
+test("a re-created object re-arms the inactivity timeout of a running container", async () => {
+  const { container, storage } = await setup();
+  const stopped = new SandboxService(new FakeContainer(), storage, SETTINGS);
+  await stopped.restoreInactivityTimeout(); // must not throw before start()
+  await execute(new SandboxService(container, storage, SETTINGS));
+  assert.equal(container.running, true);
+  container.inactivity = undefined; // simulate the timeout lost with the old instance
+  const recreated = new SandboxService(container, storage, SETTINGS);
+  await recreated.restoreInactivityTimeout();
+  assert.equal(container.inactivity, recreated.inactivityMs);
+  assert.ok(recreated.inactivityMs > recreated.idleMs, "the alarm must checkpoint before the native stop");
+});
+
+test("an alarm for a workspace that already lost its container does not retry forever", async () => {
+  const { service, container, storage } = await setup();
+  await execute(service);
+  container.running = false; // stopped natively before any checkpoint
+  await storage.put("lastActivity", Date.now() - 700_000);
+  await service.alarm(); // resolves: a thrown alarm would be retried by the platform
+  assert.equal(storage.alarm, null);
+  assert.ok(await storage.get("config"), "workspace metadata is kept so the loss is reported, not hidden");
+});

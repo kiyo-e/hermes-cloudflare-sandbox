@@ -19,8 +19,8 @@ export class HermesSandbox extends DurableObject<Env> {
     if (!ctx.container) throw new Error("HermesSandbox requires a Container binding");
     // This assignment is checked against the real API by `wrangler types` + tsc.
     this.service = new SandboxService<NativeSnapshot, NativeImage>(ctx.container, ctx.storage, env);
-    // Do not call setInactivityTimeout here: the native API rejects it until the
-    // container has been started. ensureRunning() sets it right after start().
+    // Re-arm the inactivity timeout for a container that outlived the previous object instance.
+    void ctx.blockConcurrencyWhile(() => this.service.restoreInactivityTimeout());
   }
 
   fetch(request: Request): Promise<Response> { return this.service.fetch(request); }
