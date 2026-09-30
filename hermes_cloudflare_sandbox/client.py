@@ -13,11 +13,15 @@ import urllib.request
 from collections.abc import Iterator
 from typing import Any
 
+from . import __version__
 from .config import Config
 
 MAX_BODY = 1_048_576
 MAX_FRAME = 65_536
 ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,62}\Z")
+# Cloudflare's default bot protection rejects urllib's "Python-urllib/x.y" agent
+# with error 1010 before the Worker runs, so always identify the client explicitly.
+USER_AGENT = f"hermes-cloudflare-sandbox/{__version__}"
 
 
 class BridgeError(RuntimeError):
@@ -40,7 +44,8 @@ class BridgeClient:
         body = None if data is None else json.dumps(data, ensure_ascii=False).encode("utf-8")
         if body is not None and len(body) > MAX_BODY:
             raise BridgeError("Request exceeds the bridge's 1 MiB limit", code="payload_too_large")
-        headers = {"Authorization": f"Bearer {self.config.token}", "Accept": "application/json"}
+        headers = {"Authorization": f"Bearer {self.config.token}", "Accept": "application/json",
+                   "User-Agent": USER_AGENT}
         if body is not None:
             headers["Content-Type"] = "application/json"
         if self.config.access_client_id:

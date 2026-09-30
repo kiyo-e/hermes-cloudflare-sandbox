@@ -96,6 +96,33 @@ def test_client_does_not_retry_or_follow_redirects():
         thread.join()
 
 
+def test_client_does_not_send_the_default_python_user_agent():
+    # Cloudflare's bot protection answers "Python-urllib/*" with 403 (error 1010).
+    agents = []
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            agents.append(self.headers.get("User-Agent", ""))
+            body = b'{"ok":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        def log_message(self, *args): pass
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        c = BridgeClient(Config(f"http://127.0.0.1:{server.server_port}", TOKEN))
+        assert c.request("GET", "/health") == {"ok": True}
+        assert len(agents) == 1
+        assert agents[0] and not agents[0].startswith("Python-urllib")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
 def test_process_handle_streams_and_handles_large_output(monkeypatch):
     text = "日本語🚀" * 30_000
     c = client_with_frames(monkeypatch, [

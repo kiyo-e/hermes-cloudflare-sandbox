@@ -66,7 +66,11 @@ export class FakeContainer {
   failProbe = 0;
   stdin = null;
   onSnapshot = null;
-  async setInactivityTimeout(ms) { this.inactivity = ms; }
+  async setInactivityTimeout(ms) {
+    // Mirrors the native API, which rejects this before start().
+    if (!this.running) throw new Error("The container has not been started");
+    this.inactivity = ms;
+  }
   start(options) { this.starts.push(options); this.log.push("start"); this.running = true; }
   async exec(command, options) {
     this.commands.push({ command, options });
