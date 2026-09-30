@@ -23,7 +23,7 @@ Hermes Agent
 
 ## 功能
 
-- 作为 Hermes 官方的 terminal environment provider 注册。
+- 通过 Hermes 的 terminal environment provider 接口接入。
 - 带认证的执行 API：支持标准输入、UTF-8 流式输出、退出码、执行时间限制和取消。
 - 支持命名镜像，以及按工作区选择实例类型。
 - 支持工作区 snapshot 的保存与恢复。空闲的工作区会先由 Durable Object 的 alarm 保存，再停止。
@@ -36,7 +36,8 @@ Hermes Agent
 ## 环境要求
 
 - 提供 `TerminalEnvironmentProvider` 和 `BaseEnvironment._run_bash()` 的 Hermes 版本。
-- Python 3.11 及以上、Node.js 22 及以上、Docker。
+- Python 3.11 及以上、Node.js 22 及以上。
+- Docker（Wrangler 用它构建容器镜像）。
 - 可以使用新版 Containers API 的 Cloudflare 账号。**运行容器会产生费用。**
 
 Worker 的依赖（Wrangler 4 和 TypeScript）由 `worker/package-lock.json` 固定版本。请用 `npm ci` 安装，并在部署前运行真实的类型生成和类型检查。
@@ -120,17 +121,17 @@ python scripts/smoke.py --live
 
 当 `container_persistent: true` 时，namespace 和 task ID 会被哈希成一个固定的 Durable Object。如果要从不同的 task ID 打开同一个项目，请设置固定的工作区，例如 `HERMES_CF_WORKSPACE=my-project`。不设置时，每个新的 task ID 都会得到独立的工作区。
 
-如果没有设置 namespace，插件会使用该 profile 的 Hermes home。要从另一台机器连接同一个工作区，请显式设置相同的 namespace、workspace 和 Worker 地址。不要让多个 Hermes 进程同时使用同一个固定工作区。Worker 会拒绝并发的前台命令，但不会在多个客户端之间共享或协调 shell state。
+如果没有设置 namespace，插件会把该 profile 的 Hermes home 路径用作 namespace，因此移动该目录后会得到一个新的工作区。要从另一台机器连接同一个工作区，请显式设置相同的 namespace、workspace 和 Worker 地址。不要让多个 Hermes 进程同时使用同一个固定工作区。Worker 会拒绝并发的前台命令，但不会在多个客户端之间共享或协调 shell state。
 
 当 `container_persistent: false` 时，每个环境都会使用随机标识。退出时会删除容器和 Durable Object 中的记录，不会创建 snapshot。
 
-持久化工作区的释放顺序是：`sync`、创建 snapshot、把 handle 保存到 Durable Object storage、停止容器。如果 snapshot 或 handle 无法保存，会返回错误，容器保持运行，并由 alarm 重试保存。默认情况下，最后一条命令之后约 10 分钟也会执行同样的保存。更长的原生 inactivity timeout 只是最终的停止手段（包括保存失败的情况），并不保证完成保存。
+持久化工作区的释放顺序是：`sync`、创建 snapshot、把 handle 保存到 Durable Object storage、停止容器。如果 snapshot 或 handle 无法保存，会返回错误，容器保持运行，并由 alarm 重试保存。默认情况下，最后一条命令之后约 10 分钟也会执行同样的保存。Cloudflare 自身的 inactivity timeout 设置得比它再晚 5 分钟。它只是最终的停止手段（包括保存一直失败的情况），本身不会保存任何内容。
 
 **snapshot 不能替代备份。** 它只保存文件系统，不包括正在运行的进程、内存、外部服务或另外挂载的存储。因此，后台进程不会跨越保存和停止继续运行。按照 Cloudflare 的规定，snapshot 在创建或恢复 30 天后过期，并且与生成它的镜像绑定；更新镜像不会更新从已有 snapshot 恢复的环境。需要长期保留的成果请另存到 git 等位置。
 
 发生崩溃或强制停止时，最后一次成功 snapshot 之后的修改可能会丢失。如果容器在首次启动后、尚无 snapshot 时丢失，Worker 不会悄悄启动一个空的替代环境，而是返回 `workspace_lost`。请排查原因，然后使用新的工作区名称。
 
-## 配置范围与限制
+## 配置范围
 
 | 设置 / 功能 | 本插件中的处理 |
 | --- | --- |
@@ -142,15 +143,34 @@ python scripts/smoke.py --live
 | 主机的环境变量和 home 目录 | 不会转发或同步到容器中。 |
 | Cloudflare Access | 可以通过 HTTP 头发送 client ID 和 client secret。不包括创建 Access policy。 |
 
-这个 bridge 面向单个可信的所有者。持有 bearer token 的人可以执行任意 shell 命令，并操作所有工作区；工作区名称不是授权边界。本项目不包含按用户的授权、全局并发限制或费用上限。如果要公开 Worker，请加上 Cloudflare Access 等访问控制，以及运维层面的使用限制。
+## 安全模型
 
-必须使用 HTTPS，并拒绝重定向；普通 HTTP 只在本地测试的 loopback 上接受。token 只保存在 Worker 和 Hermes 一侧，不会传入容器。写入容器文件的内容也会进入 snapshot，因此请尽量少在其中存放机密信息。本插件有意保留 Hermes 对危险命令的审批，所以在 `hermes chat -q` 这类无人值守的运行中，除非通过配置或 `--yolo` 允许，否则 `execute_code` 会被拦截。
+这个 bridge 面向单个可信的所有者。持有 bearer token 的人可以执行任意 shell 命令，并操作所有工作区；工作区名称不是授权边界。本项目不包含按用户的授权、全局并发限制或费用上限。如果要把 Worker 开放给其他人，请在前面加上 Cloudflare Access 等访问控制，并自行设置使用限制。
 
-限制：每条命令字符串 64 KiB、每个请求 1 MiB、输出按 JavaScript 字符串长度计 2,000,000 个单位、每条命令最长 900 秒。标准输入必须是不含 NUL 字符的 UTF-8 文本；大文件请分块或使用其他传输方式。输出超过上限时会报错，绝不会把截断的数据当作完整文件内容返回。stdout 和 stderr 会合并返回。
+必须使用 HTTPS，并拒绝重定向；普通 HTTP 只在本地测试的 loopback 上接受。token 只保存在 Worker 和 Hermes 一侧，不会传入容器。写入容器文件的内容也会进入 snapshot，因此请尽量少在其中存放机密信息。
+
+使用这个 backend 时，Hermes 对危险命令的审批仍然有效。在 `hermes chat -q` 这类无人值守的运行中没有人能审批，因此除非通过 Hermes 的审批设置或 `--yolo` 允许，否则 `execute_code` 会被拦截。
+
+## 限制
+
+| 项目 | 上限 |
+| --- | --- |
+| 命令字符串 | 64 KiB |
+| 请求体 | 1 MiB |
+| 每条命令的输出 | 2,000,000 个字符（按 JavaScript 字符串长度计） |
+| 每条命令的运行时间 | 900 秒 |
+
+标准输入必须是不含 NUL 字符的 UTF-8 文本；大文件请分块或用其他方式传输。输出超过上限时会报错，绝不会悄悄返回截断的结果。stdout 和 stderr 会合并为一个流返回。
 
 连接中断时命令可能已经执行，因此不会自动重试。Worker 会记录最近 64 个 request ID，并拒绝重放相同的 ID，但这并不是无限期的 exactly-once 保证。出错后请检查副作用。
 
-超时和取消由容器内的 supervisor 处理，它向 Bash 的 process group 发送信号：先发送 SIGTERM，2 秒后发送 SIGKILL。如果命令在超时 15 秒后仍未结束，Worker 会按 request ID 停止该命令的 process group，并保留工作区；只有在这种定向停止本身无法执行时，才会销毁容器。后台进程（`cmd &`）在命令返回后会继续运行，不会阻塞响应。supervisor 用于资源管理，不是针对故意逃离其 process group 的代码的安全边界。输出排空的设计参考了 [openclaw/crabbox](https://github.com/openclaw/crabbox)（MIT）。
+## 超时、取消与后台进程
+
+超时和取消由容器内的 supervisor 处理，它向 Bash 的 process group 发送信号：先发送 SIGTERM，2 秒后发送 SIGKILL。如果命令在超时 15 秒后仍未结束，Worker 会按 request ID 停止该命令的 process group，并保留工作区。只有在这种定向停止本身无法执行时，才会销毁容器。
+
+后台进程（`cmd &`）在命令返回后会继续运行，不会阻塞响应。命令结束后，它们的输出仍会继续送达，直到输出停顿 0.3 秒为止，最长 5 秒；如需全部输出，请重定向到文件。这种输出处理方式参考了 [openclaw/crabbox](https://github.com/openclaw/crabbox)（MIT）的设计。
+
+supervisor 用于资源管理，不是针对故意逃离其 process group 的代码的安全边界。
 
 ## 开发与测试
 
@@ -175,5 +195,3 @@ GitHub Actions 会运行 Python 测试、Worker 测试、Wrangler 类型生成�
 - [Cloudflare Durable Object Container API](https://developers.cloudflare.com/containers/api/durable-object-container/)
 - [Cloudflare Scheduling Policies](https://developers.cloudflare.com/containers/configuration/scheduling-policy/)
 - [Cloudflare Snapshots](https://developers.cloudflare.com/containers/guides/snapshots/)
-
-本项目不是 Hermes 或 Cloudflare 的官方插件。

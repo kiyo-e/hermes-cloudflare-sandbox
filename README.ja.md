@@ -28,7 +28,7 @@ Hermes Agent
 
 ## 実装している機能
 
-- Hermesの公式terminal environment providerとして登録します。
+- Hermesのterminal environment providerの仕組みを通じて組み込まれます。
 - 認証付きの実行APIです。標準入力、UTF-8のストリーミング出力、終了コード、実行時間の制限、キャンセルに対応します。
 - 名前付きイメージと、ワークスペースごとのインスタンス選択に対応します。
 - ワークスペースのsnapshot保存と復元に対応します。アイドル状態のワークスペースは、Durable Objectのalarmで保存してから停止します。
@@ -45,7 +45,8 @@ Hermesのほかの部分（ブラウザーや外部ツール）をCloudflareへ�
 ## 必要な環境
 
 - `TerminalEnvironmentProvider`と`BaseEnvironment._run_bash()`を備えたHermes
-- Python 3.11以上、Node.js 22以上、Docker
+- Python 3.11以上、Node.js 22以上
+- Docker（WranglerがContainerイメージのビルドに使います）
 - 新しいContainers APIを利用できるCloudflareアカウント（**Containerの実行には課金が発生します**）
 
 Workerの依存関係（Wrangler 4系とTypeScript）は、`worker/package-lock.json`で版を固定しています。
@@ -151,7 +152,8 @@ shell stateの引き継ぎも、利用するHermesのバージョンで確認し
 別のtask IDから同じプロジェクトを開く場合は、`HERMES_CF_WORKSPACE=my-project`のように固定のworkspaceを設定してください。
 設定しない場合は、新しいtask IDごとに別のワークスペースが作られます。
 
-namespaceを省略した場合、プラグインはそのプロファイルのHermes homeを使います。
+namespaceを省略した場合は、そのプロファイルのHermes homeのパスをnamespaceとして使います。
+そのため、そのディレクトリを移動すると別のワークスペースになります。
 別の端末から同じワークスペースへ接続する場合は、namespace、workspace、Workerの接続先を同じ値で明示してください。
 同じ固定workspaceを、複数のHermesプロセスから同時に使わないでください。
 Workerは同時の前景コマンドを拒否しますが、複数のクライアントのshell stateを共有したり調停したりはしません。
@@ -162,7 +164,8 @@ Workerは同時の前景コマンドを拒否しますが、複数のクライ�
 永続化する場合の終了処理は、`sync`、snapshotの作成、handleのDurable Object storageへの保存、Containerの停止の順です。
 snapshotやhandleを保存できなかったときは、エラーを返し、Containerを止めずにalarmで保存を再試行します。
 既定では、最後のコマンドから約10分たったときにも同じ保存処理を行います。
-それより長いネイティブのinactivity timeoutは、保存に失敗した場合も含めた最終的な停止の仕組みであり、保存を保証するものではありません。
+Cloudflare側のinactivity timeoutは、それより5分長く設定しています。
+保存に失敗し続けた場合も含めた最終的な停止の仕組みで、それ自体は何も保存しません。
 
 **snapshotはバックアップの代わりにはなりません。**
 保存するのはファイルシステムだけで、実行中のプロセス、メモリ、外部サービス、別にマウントしたストレージの状態は含みません。
@@ -175,9 +178,9 @@ Cloudflareの仕様で、snapshotは作成または復元から30日で期限が
 初回の起動後、snapshotがないままContainerが失われた場合は、空の環境を黙って作り直さず、`workspace_lost`を返します。
 原因を確認し、新しいworkspace名を使ってください。
 
-## 設定の範囲と制限
+## 設定の範囲
 
-| 設定・機能 | この実装での扱い |
+| 設定と機能 | この実装での扱い |
 | --- | --- |
 | `terminal.container_persistent` | snapshotによる永続化の有効と無効を切り替えます。 |
 | `terminal.cwd` | Container内の絶対パスとして使います。既定は`/workspace`です。 |
@@ -187,36 +190,54 @@ Cloudflareの仕様で、snapshotは作成または復元から30日で期限が
 | ホスト側の環境変数とホームディレクトリ | Containerへ転送や同期はしません。 |
 | Cloudflare Access | client IDとclient secretをHTTPヘッダーで送れます。Access policyの作成は含みません。 |
 
+## セキュリティの前提
+
 信頼できる一人の所有者のためのbridgeです。
 bearer tokenを持つ人は、任意のshellコマンドを実行でき、すべてのworkspaceを操作できます。
 workspace名は認可の境界ではありません。
 ユーザーごとの認可、全体の同時実行数の制限、料金の上限は含みません。
-Workerを公開する場合は、Cloudflare Accessなどのアクセス制御と、運用上の利用制限を追加してください。
+Workerをほかの人に公開する場合は、Cloudflare Accessなどのアクセス制御を前段に置き、利用制限も別に用意してください。
 
 HTTPSを必須にし、リダイレクトを拒否します。
 HTTPはローカルテスト用のloopbackだけで受け付けます。
 tokenはWorkerとHermes側にだけ置き、Containerへは渡しません。
 Container内のファイルへ書いたものはsnapshotにも含まれるため、秘密情報は最小限にしてください。
-危険なコマンドに対するHermesの承認は、意図的に有効のままにしています。
-そのため、`hermes chat -q`のように承認する人がいない実行では、設定か`--yolo`で許可しない限り`execute_code`がブロックされます。
 
-制限は、コマンド文字列が64 KiB、リクエストが1 MiB、出力がJavaScriptの文字列長で2,000,000単位、実行時間が900秒です。
+このbackendでも、危険なコマンドに対するHermesの承認は有効のままです。
+`hermes chat -q`のように承認する人がいない実行では、Hermesの承認の設定か`--yolo`で許可しない限り、`execute_code`はブロックされます。
+
+## 制限
+
+| 項目 | 上限 |
+| --- | --- |
+| コマンド文字列 | 64 KiB |
+| リクエスト本文 | 1 MiB |
+| 1コマンドの出力 | 2,000,000文字（JavaScriptの文字列長） |
+| 1コマンドの実行時間 | 900秒 |
+
 標準入力はUTF-8のテキストで、NUL文字は受け付けません。
-大きなファイルは分割するか、別の転送手段を使ってください。
-出力が上限を超えた場合はエラーにし、切り捨てたデータを完全なファイル内容として返すことはしません。
-stdoutとstderrはまとめて返します。
+大きなファイルは分割するか、別の手段で転送してください。
+出力が上限を超えた場合はエラーにし、切り捨てた結果を黙って返すことはしません。
+stdoutとstderrは一つにまとめて返します。
 
 通信が切れた場合、コマンドがすでに実行されている可能性があるため、自動では再実行しません。
 Workerは直近64件のrequest IDを記録し、同じIDの再送を拒否しますが、無期限のexactly-once保証ではありません。
 エラーのあとは副作用を確認してください。
 
+## タイムアウト、キャンセル、バックグラウンドのプロセス
+
 タイムアウトとキャンセルは、Container内のsupervisorがBashのprocess groupへシグナルを送って処理します。
 まずSIGTERMを送り、2秒後にSIGKILLを送ります。
 タイムアウトから15秒たっても終わらない場合は、Workerがrequest IDを指定してそのコマンドのprocess groupを止め、ワークスペースは残します。
 Containerを破棄するのは、その停止自体が実行できなかった場合だけです。
-バックグラウンドのプロセス（`cmd &`）はコマンドが返ったあとも動き続け、応答を引き止めません。
-supervisorは資源管理のための仕組みで、process groupから意図的に抜け出すコードに対するセキュリティ境界ではありません。
-出力の待ち方は[openclaw/crabbox](https://github.com/openclaw/crabbox)（MIT）の設計に従っています。
+
+バックグラウンドのプロセス（`cmd &`）は、コマンドが返ったあとも動き続け、応答を引き止めません。
+その出力は、コマンドの終了後も0.3秒途切れるまで、最長5秒のあいだ届けます。
+すべての出力が必要な場合は、ファイルへリダイレクトしてください。
+この出力の扱いは、[openclaw/crabbox](https://github.com/openclaw/crabbox)（MIT）の設計に従っています。
+
+supervisorは資源管理のための仕組みです。
+process groupから意図的に抜け出すコードに対するセキュリティ境界ではありません。
 
 ## 開発とテスト
 
@@ -244,5 +265,3 @@ GitHub Actionsでは、Pythonのテスト、Workerのテスト、Wranglerの型�
 - [Cloudflare Durable Object Container API](https://developers.cloudflare.com/containers/api/durable-object-container/)
 - [Cloudflare Scheduling Policies](https://developers.cloudflare.com/containers/configuration/scheduling-policy/)
 - [Cloudflare Snapshots](https://developers.cloudflare.com/containers/guides/snapshots/)
-
-このプロジェクトは、HermesやCloudflareの公式プラグインではありません。

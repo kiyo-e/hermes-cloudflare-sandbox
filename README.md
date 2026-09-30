@@ -4,7 +4,7 @@
 
 A third-party plugin that runs the [Hermes Agent](https://github.com/NousResearch/hermes-agent) terminal backend inside a Cloudflare Container managed by a Durable Object. Hermes itself stays on your machine or server; only command execution moves to Cloudflare.
 
-**Status: early implementation.** The basic operations have been verified against a real Cloudflare account and a real Hermes install. See [VALIDATION.md](VALIDATION.md) for exactly what was tested. This is not an official Hermes or Cloudflare plugin.
+**Status: early implementation.** The basic operations have been verified against a real Cloudflare account and a real Hermes install. See [VALIDATION.md](VALIDATION.md) (in Japanese) for exactly what was tested. This is not an official Hermes or Cloudflare plugin.
 
 It targets the `durable_object` scheduling policy and the native `ctx.container` API released on 2026-09-30. It does not depend on the older `Container` class or the legacy `Sandbox` class. These Cloudflare features are in public beta, so check compatibility in your own account.
 
@@ -23,7 +23,7 @@ Hermes Agent
 
 ## Features
 
-- Registers as an official Hermes terminal environment provider.
+- Plugs into Hermes through its terminal environment provider interface.
 - Authenticated execution API with stdin, streamed UTF-8 output, exit codes, time limits and cancellation.
 - Named images and per-workspace instance types.
 - Workspace snapshots and restore. An idle workspace is checkpointed by a Durable Object alarm, then stopped.
@@ -36,7 +36,8 @@ The plugin connects `terminal`, file tools and `execute_code`. It does not move 
 ## Requirements
 
 - A Hermes version that provides `TerminalEnvironmentProvider` and `BaseEnvironment._run_bash()`.
-- Python 3.11+, Node.js 22+ and Docker.
+- Python 3.11+ and Node.js 22+.
+- Docker, which Wrangler uses to build the container image.
 - A Cloudflare account with access to the new Containers API. **Running containers is billed.**
 
 Worker dependencies (Wrangler 4 and TypeScript) are pinned by `worker/package-lock.json`. Install them with `npm ci`, and run the real type generation and type check before deploying.
@@ -120,17 +121,17 @@ Finally, from Hermes, check `pwd`, writing and reading a file, and `execute_code
 
 With `container_persistent: true`, the namespace and the task ID are hashed into a stable Durable Object. To reach the same project from a different task ID, set a fixed workspace, for example `HERMES_CF_WORKSPACE=my-project`. Without it, each new task ID gets its own workspace.
 
-If no namespace is set, the plugin uses the Hermes home of the profile. To reach the same workspace from another machine, set the same namespace, workspace and Worker endpoint explicitly. Do not use one fixed workspace from several Hermes processes at the same time. The Worker rejects concurrent foreground commands, but it does not share or reconcile shell state between clients.
+If no namespace is set, the path of the profile's Hermes home is used as the namespace, so moving that directory gives you a new workspace. To reach the same workspace from another machine, set the same namespace, workspace and Worker endpoint explicitly. Do not use one fixed workspace from several Hermes processes at the same time. The Worker rejects concurrent foreground commands, but it does not share or reconcile shell state between clients.
 
 With `container_persistent: false`, every environment gets a random identifier. On exit, the container and the Durable Object's records are deleted, and no snapshot is taken.
 
-A persistent workspace is released in this order: `sync`, create a snapshot, store its handle in Durable Object storage, then stop the container. If the snapshot or the handle cannot be saved, the error is returned, the container keeps running, and an alarm retries the save. By default the same save runs after about 10 minutes without commands. A longer native inactivity timeout is only a last-resort stop, including when saving fails; it does not guarantee a save.
+A persistent workspace is released in this order: `sync`, create a snapshot, store its handle in Durable Object storage, then stop the container. If the snapshot or the handle cannot be saved, the error is returned, the container keeps running, and an alarm retries the save. By default the same save runs after about 10 minutes without commands. Cloudflare's own inactivity timeout is set 5 minutes later than that. It is a last-resort stop, including when saving keeps failing, and it does not save anything by itself.
 
 **Snapshots are not backups.** They contain the filesystem only, not running processes, memory, external services or separately mounted storage. Background jobs therefore do not survive a checkpoint. Cloudflare expires snapshots 30 days after they are created or restored, and a snapshot is tied to the image it came from; updating the image does not update environments restored from existing snapshots. Keep anything you need long term in git or other storage.
 
 After a crash or a forced stop, changes since the last successful snapshot may be lost. If a container is lost after its first start with no snapshot, the Worker does not silently start an empty replacement; it returns `workspace_lost`. Investigate, then use a new workspace name.
 
-## Configuration scope and limits
+## Configuration scope
 
 | Setting / feature | Behavior in this plugin |
 | --- | --- |
@@ -142,15 +143,34 @@ After a crash or a forced stop, changes since the last successful snapshot may b
 | Host environment variables and home directory | Not forwarded or synced into the container. |
 | Cloudflare Access | A client ID and secret can be sent as HTTP headers. Creating the Access policy is not included. |
 
-This bridge is for a single trusted owner. Anyone holding the bearer token can run any shell command and operate on every workspace; workspace names are not an authorization boundary. Per-user authorization, global concurrency limits and spending caps are not included. If you expose the Worker, add access control such as Cloudflare Access and operational usage limits.
+## Security model
 
-HTTPS is required and redirects are refused; plain HTTP is only accepted on loopback for local tests. The token lives in the Worker and in Hermes and is never passed into the container. Anything written to files in the container ends up in snapshots, so keep secrets there to a minimum. Hermes' approval prompts for dangerous commands are deliberately left on, so in unattended runs such as `hermes chat -q`, `execute_code` is blocked unless you approve it by configuration or `--yolo`.
+This bridge is for a single trusted owner. Anyone holding the bearer token can run any shell command and operate on every workspace; workspace names are not an authorization boundary. Per-user authorization, global concurrency limits and spending caps are not included. If you expose the Worker to other people, put access control such as Cloudflare Access in front of it and add your own usage limits.
 
-Limits: 64 KiB per command string, 1 MiB per request, 2,000,000 JavaScript string units of output, and 900 seconds per command. stdin is UTF-8 text without NUL characters; split large files or use another transfer method. Output over the limit is an error; truncated data is never returned as if it were the full file. stdout and stderr are merged.
+HTTPS is required and redirects are refused; plain HTTP is accepted only on loopback, for local tests. The token stays in the Worker and in Hermes and is never passed into the container. Files written inside the container end up in snapshots, so keep secrets there to a minimum.
 
-If the connection drops, the command may already have run, so nothing is retried automatically. The Worker remembers the last 64 request IDs and rejects a replay of the same ID, but this is not an unlimited exactly-once guarantee. Check for side effects after an error.
+Hermes' approval prompts for dangerous commands stay on with this backend. In unattended runs such as `hermes chat -q` nobody can approve, so `execute_code` is blocked unless you allow it through Hermes' approval settings or `--yolo`.
 
-Timeouts and cancellation are handled by a supervisor inside the container that signals Bash's process group: SIGTERM, then SIGKILL 2 seconds later. If a command still has not ended 15 seconds after its timeout, the Worker stops that command's process group by request ID and keeps the workspace; the container is destroyed only if that targeted stop cannot run. Background jobs (`cmd &`) keep running after the command returns and do not hold the response open. The supervisor is resource management, not a security boundary against code that deliberately escapes its process group. The output-draining design follows [openclaw/crabbox](https://github.com/openclaw/crabbox) (MIT).
+## Limits
+
+| Item | Limit |
+| --- | --- |
+| Command string | 64 KiB |
+| Request body | 1 MiB |
+| Output per command | 2,000,000 characters (JavaScript string length) |
+| Run time per command | 900 seconds |
+
+stdin must be UTF-8 text without NUL characters; split large files or transfer them another way. Output over the limit is an error, never a silently truncated result. stdout and stderr are merged into one stream.
+
+If the connection drops, the command may already have run, so nothing is retried automatically. The Worker remembers the last 64 request IDs and rejects a replay of the same ID; this is not an unlimited exactly-once guarantee. Check for side effects after an error.
+
+## Timeouts, cancellation and background jobs
+
+A supervisor inside the container handles timeouts and cancellation by signalling Bash's process group: SIGTERM first, then SIGKILL 2 seconds later. If a command still has not ended 15 seconds after its timeout, the Worker stops that command's process group by request ID and keeps the workspace. The container is destroyed only if that targeted stop itself cannot run.
+
+Background jobs (`cmd &`) keep running after the command returns and do not hold the response open. Their output is still delivered until it has been quiet for 0.3 seconds, for at most 5 seconds after the command exits; redirect it to a file if you need all of it. This output handling follows the design of [openclaw/crabbox](https://github.com/openclaw/crabbox) (MIT).
+
+The supervisor manages resources. It is not a security boundary against code that deliberately escapes its process group.
 
 ## Development and tests
 
@@ -175,5 +195,3 @@ GitHub Actions runs the Python tests, the Worker tests, Wrangler type generation
 - [Cloudflare Durable Object Container API](https://developers.cloudflare.com/containers/api/durable-object-container/)
 - [Cloudflare Scheduling Policies](https://developers.cloudflare.com/containers/configuration/scheduling-policy/)
 - [Cloudflare Snapshots](https://developers.cloudflare.com/containers/guides/snapshots/)
-
-This project is not an official plugin of Hermes or Cloudflare.
