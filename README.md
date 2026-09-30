@@ -38,7 +38,7 @@ Workerの依存関係はWrangler 4系とTypeScriptです。新APIが利用でき
 ```bash
 git clone https://github.com/kiyo-e/hermes-cloudflare-sandbox.git
 cd hermes-cloudflare-sandbox/worker
-npm install
+npm ci
 npm test
 npm run typecheck
 npx wrangler login
@@ -150,7 +150,7 @@ HTTPSを必須にし、リダイレクトを拒否します。HTTPはローカ�
 python -m pip install -e '.[test]'
 python -m pytest -q
 cd worker
-npm install
+npm ci
 npm test
 npm run typecheck
 ```
