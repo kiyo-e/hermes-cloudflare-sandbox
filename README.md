@@ -2,7 +2,7 @@
 
 Hermes Agentのterminal backendを、CloudflareのDurable Objectが管理するContainerへ接続する外部プラグインです。Hermes本体はローカル環境または通常のサーバー上に残します。
 
-**ステータス：初期実装です。ローカルの単体テストは実行済みですが、実際のHermesとCloudflareアカウントを組み合わせた動作確認は未実施です。公式対応を意味するものではありません。** 検証の範囲は[VALIDATION.md](VALIDATION.md)を参照してください。
+**ステータス：初期実装です。実際のCloudflareアカウントとHermesで、基本の操作を確認しました。公式対応を意味するものではありません。** 検証の範囲は[VALIDATION.md](VALIDATION.md)を参照してください。
 
 2026年9月30日に公開された`durable_object` scheduling policyと、ネイティブの`ctx.container` APIを対象にしています。従来の`Container`クラスや旧`Sandbox`クラスには依存しません。これらのCloudflare機能はpublic betaであるため、導入先での互換性確認が必要です。
 
@@ -106,7 +106,7 @@ python scripts/smoke.py --live
 
 このスクリプトは、認証、標準入力、日本語、非ゼロの終了コード、タイムアウト、ファイルの保存、停止、snapshotからの復元を確認します。一時的なContainerとsnapshotを作成するため課金される可能性があります。既存の`HERMES_CF_WORKSPACE`は使用しません。最後にテスト専用のワークスペースを削除しますが、Cloudflare側のsnapshot自体はTTLまで残ることがあります。
 
-最後にHermesから`pwd`、ファイルの書き込みと読み出し、`execute_code`を確認してください。shell stateの引き継ぎについても、利用するHermesのバージョンで確認してください。このライブ確認は作成環境では実行していません。
+最後にHermesから`pwd`、ファイルの書き込みと読み出し、`execute_code`を確認してください。shell stateの引き継ぎについても、利用するHermesのバージョンで確認してください。2026-10-01に、このライブ確認を実行しました。
 
 ## ワークスペースの識別と永続化
 
