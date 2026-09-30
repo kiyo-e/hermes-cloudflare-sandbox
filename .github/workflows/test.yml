@@ -1,0 +1,45 @@
+name: Test
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e '.[test]'
+      - run: python -m pytest -q
+  worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # No lockfile was fabricated in the offline authoring environment.
+      # Commit the generated package-lock.json after the first validated install.
+      - run: npm install
+        working-directory: worker
+      - run: npm test
+        working-directory: worker
+      - run: npm run typecheck
+        working-directory: worker
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build runtime image (does not deploy to Cloudflare)
+        run: docker build --tag hermes-cf-test worker/container
+      - name: Check non-root runtime and supervisor
+        run: |
+          docker run --rm hermes-cf-test sh -c 'test "$(id -u)" -ne 0 && test -w /workspace'
+          docker run --rm hermes-cf-test /usr/local/bin/hermes-exec 5 -c 'python --version && node --version && printf "日本語\n"'

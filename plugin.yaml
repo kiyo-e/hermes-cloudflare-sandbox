@@ -1,0 +1,4 @@
+name: cloudflare-sandbox
+version: 0.1.0
+description: Run Hermes terminal tools in Cloudflare Durable Object managed Containers.
+kind: backend

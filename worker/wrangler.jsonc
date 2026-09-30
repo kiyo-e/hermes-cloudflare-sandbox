@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hermes-cloudflare-sandbox",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-30",
+  "durable_objects": {
+    "bindings": [{ "name": "SANDBOX", "class_name": "HermesSandbox" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["HermesSandbox"] }],
+  "containers": [{
+    "class_name": "HermesSandbox",
+    "scheduling_policy": "durable_object",
+    "images": { "hermes": { "dockerfile": "./container/Dockerfile", "build_context": "./container" } }
+  }],
+  "vars": {
+    "DEFAULT_INSTANCE_TYPE": "standard-1",
+    "ALLOWED_INSTANCE_TYPES": "lite,standard-1",
+    // Explicit operator choice: package installation and git require outbound access.
+    "ENABLE_INTERNET": "true",
+    "IDLE_SECONDS": "600"
+  },
+  "observability": { "enabled": true }
+}
