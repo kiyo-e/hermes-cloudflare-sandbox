@@ -1,4 +1,13 @@
 name: cloudflare-sandbox
 version: 0.1.0
 description: Run Hermes terminal tools in Cloudflare Durable Object managed Containers.
+author: kiyo-e
 kind: backend
+requires_hermes: ">=0.20.6"
+requires_env:
+  - name: HERMES_CF_ENDPOINT
+    description: URL of your deployed hermes-cloudflare-sandbox Worker
+    url: https://github.com/kiyo-e/hermes-cloudflare-sandbox#1-deploy-the-worker
+  - name: HERMES_CF_TOKEN
+    description: The same value as the Worker secret SANDBOX_API_TOKEN
+    secret: true
