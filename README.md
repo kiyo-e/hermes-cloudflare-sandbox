@@ -1,10 +1,15 @@
 # Hermes Cloudflare Sandbox
 
+[![Test](https://github.com/kiyo-e/hermes-cloudflare-sandbox/actions/workflows/test.yml/badge.svg)](https://github.com/kiyo-e/hermes-cloudflare-sandbox/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **English** | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
-A third-party plugin that runs the [Hermes Agent](https://github.com/NousResearch/hermes-agent) terminal backend inside a Cloudflare Container managed by a Durable Object. Hermes itself stays on your machine or server; only command execution moves to Cloudflare.
+Run the Hermes Agent terminal in a Cloudflare Container: commands, files and `execute_code` run remotely, and the workspace is saved to a snapshot when idle.
 
-**Status: early implementation.** The basic operations have been verified against a real Cloudflare account and a real Hermes install. See [VALIDATION.md](VALIDATION.md) (in Japanese) for exactly what was tested. This is not an official Hermes or Cloudflare plugin.
+This is a third-party terminal backend plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Each workspace is a Cloudflare Container managed by a Durable Object. Hermes itself stays on your machine or server.
+
+**Status: early implementation.** The basic operations have been verified against a real Cloudflare account and a real Hermes install. See [VALIDATION.md](VALIDATION.md) (in Japanese) for exactly what was tested.
 
 It targets the `durable_object` scheduling policy and the native `ctx.container` API released on 2026-09-30. It does not depend on the older `Container` class or the legacy `Sandbox` class. These Cloudflare features are in public beta, so check compatibility in your own account.
 
@@ -168,9 +173,13 @@ If the connection drops, the command may already have run, so nothing is retried
 
 A supervisor inside the container handles timeouts and cancellation by signalling Bash's process group: SIGTERM first, then SIGKILL 2 seconds later. If a command still has not ended 15 seconds after its timeout, the Worker stops that command's process group by request ID and keeps the workspace. The container is destroyed only if that targeted stop itself cannot run.
 
-Background jobs (`cmd &`) keep running after the command returns and do not hold the response open. Their output is still delivered until it has been quiet for 0.3 seconds, for at most 5 seconds after the command exits; redirect it to a file if you need all of it. This output handling follows the design of [openclaw/crabbox](https://github.com/openclaw/crabbox) (MIT).
+Background jobs (`cmd &`) keep running after the command returns and do not hold the response open. Their output is still delivered until it has been quiet for 0.3 seconds, for at most 5 seconds after the command exits; redirect it to a file if you need all of it. This output handling follows the design of [openclaw/crabbox](https://github.com/openclaw/crabbox) (see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
 
 The supervisor manages resources. It is not a security boundary against code that deliberately escapes its process group.
+
+## HTTP protocol
+
+The Worker API (endpoints, NDJSON stream events, error codes) is documented in [docs/protocol.md](docs/protocol.md).
 
 ## Development and tests
 
@@ -195,3 +204,9 @@ GitHub Actions runs the Python tests, the Worker tests, Wrangler type generation
 - [Cloudflare Durable Object Container API](https://developers.cloudflare.com/containers/api/durable-object-container/)
 - [Cloudflare Scheduling Policies](https://developers.cloudflare.com/containers/configuration/scheduling-policy/)
 - [Cloudflare Snapshots](https://developers.cloudflare.com/containers/guides/snapshots/)
+
+## License
+
+[MIT](LICENSE). Parts of the container supervisor are ported from [openclaw/crabbox](https://github.com/openclaw/crabbox) (MIT); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+This project is not affiliated with Nous Research or Cloudflare.

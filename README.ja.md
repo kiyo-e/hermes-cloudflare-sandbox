@@ -1,13 +1,18 @@
 # Hermes Cloudflare Sandbox
 
+[![Test](https://github.com/kiyo-e/hermes-cloudflare-sandbox/actions/workflows/test.yml/badge.svg)](https://github.com/kiyo-e/hermes-cloudflare-sandbox/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 [English](README.md) | **日本語** | [简体中文](README.zh-CN.md)
 
-[Hermes Agent](https://github.com/NousResearch/hermes-agent)のterminal backendを、CloudflareのDurable Objectが管理するContainerで動かす外部プラグインです。
-Hermes本体は手元の環境やサーバーに残し、コマンドの実行だけをCloudflareへ移します。
+Hermes Agentのterminalを、CloudflareのContainerで動かします。コマンド、ファイル操作、`execute_code`がリモートで動き、使わないあいだのワークスペースはsnapshotに保存されます。
+
+[Hermes Agent](https://github.com/NousResearch/hermes-agent)の外部プラグインとして動くterminal backendです。
+ワークスペースごとに、CloudflareのDurable Objectが管理するContainerを使います。
+Hermes本体は、手元の環境やサーバーに残ります。
 
 **ステータス：初期実装です。** 実際のCloudflareアカウントとHermesで、基本の操作を確認しました。
 確認した範囲は[VALIDATION.md](VALIDATION.md)を参照してください。
-HermesやCloudflareの公式プラグインではありません。
 
 2026年9月30日に公開された`durable_object` scheduling policyと、ネイティブの`ctx.container` APIを対象にしています。
 従来の`Container`クラスや旧`Sandbox`クラスには依存しません。
@@ -234,10 +239,14 @@ Containerを破棄するのは、その停止自体が実行できなかった�
 バックグラウンドのプロセス（`cmd &`）は、コマンドが返ったあとも動き続け、応答を引き止めません。
 その出力は、コマンドの終了後も0.3秒途切れるまで、最長5秒のあいだ届けます。
 すべての出力が必要な場合は、ファイルへリダイレクトしてください。
-この出力の扱いは、[openclaw/crabbox](https://github.com/openclaw/crabbox)（MIT）の設計に従っています。
+この出力の扱いは、[openclaw/crabbox](https://github.com/openclaw/crabbox)の設計に従っています（[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)を参照）。
 
 supervisorは資源管理のための仕組みです。
 process groupから意図的に抜け出すコードに対するセキュリティ境界ではありません。
+
+## HTTPのプロトコル
+
+WorkerのAPI（エンドポイント、NDJSONのイベント、エラーコード）は、[docs/protocol.md](docs/protocol.md)（英語）に記載しています。
 
 ## 開発とテスト
 
@@ -265,3 +274,11 @@ GitHub Actionsでは、Pythonのテスト、Workerのテスト、Wranglerの型�
 - [Cloudflare Durable Object Container API](https://developers.cloudflare.com/containers/api/durable-object-container/)
 - [Cloudflare Scheduling Policies](https://developers.cloudflare.com/containers/configuration/scheduling-policy/)
 - [Cloudflare Snapshots](https://developers.cloudflare.com/containers/guides/snapshots/)
+
+## ライセンス
+
+[MIT](LICENSE)です。
+Container内のsupervisorの一部は[openclaw/crabbox](https://github.com/openclaw/crabbox)（MIT）から移植しています。
+詳しくは[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)を参照してください。
+
+このプロジェクトは、Nous ResearchやCloudflareとは関係のない個人のプロジェクトです。

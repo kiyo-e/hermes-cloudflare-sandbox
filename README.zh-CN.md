@@ -1,10 +1,15 @@
 # Hermes Cloudflare Sandbox
 
+[![Test](https://github.com/kiyo-e/hermes-cloudflare-sandbox/actions/workflows/test.yml/badge.svg)](https://github.com/kiyo-e/hermes-cloudflare-sandbox/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 [English](README.md) | [日本語](README.ja.md) | **简体中文**
 
-这是一个第三方插件，把 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 的 terminal backend 放到由 Cloudflare Durable Object 管理的 Container 中运行。Hermes 本身仍留在你的电脑或服务器上，只有命令执行被转移到 Cloudflare。
+在 Cloudflare Container 中运行 Hermes Agent 的 terminal：命令、文件操作和 `execute_code` 都在远程执行，空闲时工作区会保存为 snapshot。
 
-**状态：早期实现。** 已在真实的 Cloudflare 账号和真实的 Hermes 上验证了基本操作。具体测试范围见 [VALIDATION.md](VALIDATION.md)（日文）。本项目不是 Hermes 或 Cloudflare 的官方插件。
+这是 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 的第三方 terminal backend 插件。每个工作区对应一个由 Cloudflare Durable Object 管理的 Container。Hermes 本身仍留在你的电脑或服务器上。
+
+**状态：早期实现。** 已在真实的 Cloudflare 账号和真实的 Hermes 上验证了基本操作。具体测试范围见 [VALIDATION.md](VALIDATION.md)（日文）。
 
 本插件面向 2026 年 9 月 30 日发布的 `durable_object` scheduling policy 和原生 `ctx.container` API，不依赖旧的 `Container` 类或旧版 `Sandbox` 类。这些 Cloudflare 功能目前处于 public beta，请在自己的账号中确认兼容性。
 
@@ -168,9 +173,13 @@ python scripts/smoke.py --live
 
 超时和取消由容器内的 supervisor 处理，它向 Bash 的 process group 发送信号：先发送 SIGTERM，2 秒后发送 SIGKILL。如果命令在超时 15 秒后仍未结束，Worker 会按 request ID 停止该命令的 process group，并保留工作区。只有在这种定向停止本身无法执行时，才会销毁容器。
 
-后台进程（`cmd &`）在命令返回后会继续运行，不会阻塞响应。命令结束后，它们的输出仍会继续送达，直到输出停顿 0.3 秒为止，最长 5 秒；如需全部输出，请重定向到文件。这种输出处理方式参考了 [openclaw/crabbox](https://github.com/openclaw/crabbox)（MIT）的设计。
+后台进程（`cmd &`）在命令返回后会继续运行，不会阻塞响应。命令结束后，它们的输出仍会继续送达，直到输出停顿 0.3 秒为止，最长 5 秒；如需全部输出，请重定向到文件。这种输出处理方式参考了 [openclaw/crabbox](https://github.com/openclaw/crabbox) 的设计（见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）。
 
 supervisor 用于资源管理，不是针对故意逃离其 process group 的代码的安全边界。
+
+## HTTP 协议
+
+Worker 的 API（端点、NDJSON 流事件、错误码）见 [docs/protocol.md](docs/protocol.md)（英文）。
 
 ## 开发与测试
 
@@ -195,3 +204,9 @@ GitHub Actions 会运行 Python 测试、Worker 测试、Wrangler 类型生成�
 - [Cloudflare Durable Object Container API](https://developers.cloudflare.com/containers/api/durable-object-container/)
 - [Cloudflare Scheduling Policies](https://developers.cloudflare.com/containers/configuration/scheduling-policy/)
 - [Cloudflare Snapshots](https://developers.cloudflare.com/containers/guides/snapshots/)
+
+## 许可证
+
+[MIT](LICENSE)。容器内 supervisor 的部分代码移植自 [openclaw/crabbox](https://github.com/openclaw/crabbox)（MIT），详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+本项目与 Nous Research 和 Cloudflare 没有关联。
