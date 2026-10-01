@@ -96,6 +96,8 @@ hermes config set terminal.container_persistent true
 
 ## 3. 動作を確認する
 
+リポジトリの直下で実行します。
+
 ```bash
 python scripts/check_hermes_contract.py --hermes-source /path/to/hermes-agent
 python scripts/smoke.py --live
@@ -114,7 +116,7 @@ python scripts/smoke.py --live
 
 `container_persistent: false`では、セッションの終了時にワークスペースを削除します。
 
-セッションが終わったとき、またはコマンドが約10分なかったときに、ワークスペースをsnapshotへ保存してContainerを止めます。
+セッションが終わったとき、またはコマンドが約10分なかったときに（`wrangler.jsonc`の`IDLE_SECONDS`で変更できます）、ワークスペースをsnapshotへ保存してContainerを止めます。
 保存に失敗した場合は、Containerを動かしたまま保存を再試行します。
 
 **snapshotはバックアップの代わりになりません。**
@@ -132,7 +134,7 @@ snapshotが一つもないままContainerが失われた場合、Workerは空の
 | `terminal.container_persistent` | セッションをまたいでワークスペースをsnapshotに残します。 |
 | `terminal.cwd` | Container内の作業ディレクトリです。既定は`/workspace`です。 |
 | `HERMES_CF_IMAGE` | `wrangler.jsonc`で定義したイメージの名前です。 |
-| `HERMES_CF_INSTANCE` | `ALLOWED_INSTANCE_TYPES`で許可したインスタンスの種類です。 |
+| `HERMES_CF_INSTANCE` | `lite`、`standard-1`〜`standard-4`のうち、`ALLOWED_INSTANCE_TYPES`で許可した種類です。 |
 | `HERMES_CF_ACCESS_CLIENT_ID`、`HERMES_CF_ACCESS_CLIENT_SECRET` | WorkerをCloudflare Accessで保護している場合のservice tokenです。 |
 
 Hermesの汎用のContainerイメージ、CPU、メモリ、diskの設定は使いません。

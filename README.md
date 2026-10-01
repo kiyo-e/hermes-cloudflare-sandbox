@@ -86,6 +86,8 @@ Restart Hermes afterwards. To keep your usual profile on the local terminal, try
 
 ## 3. Verify
 
+Run these from the repository root.
+
 ```bash
 python scripts/check_hermes_contract.py --hermes-source /path/to/hermes-agent
 python scripts/smoke.py --live
@@ -99,7 +101,7 @@ With `container_persistent: true`, the namespace and Hermes' task ID select the 
 
 With `container_persistent: false`, the workspace is deleted when the session ends.
 
-When a session ends, or after about 10 minutes without commands, the workspace is saved to a snapshot and the container stops. If saving fails, the container keeps running and the save is retried.
+When a session ends, or after about 10 minutes without commands (`IDLE_SECONDS` in `wrangler.jsonc`), the workspace is saved to a snapshot and the container stops. If saving fails, the container keeps running and the save is retried.
 
 **Snapshots are not backups.** They contain files only, so running processes (including background jobs) do not survive. Cloudflare deletes a snapshot 30 days after it is created or restored. Keep important work in git.
 
@@ -112,7 +114,7 @@ If a container is lost before any snapshot exists, the Worker returns `workspace
 | `terminal.container_persistent` | Keep the workspace in snapshots between sessions. |
 | `terminal.cwd` | Working directory inside the container. Default `/workspace`. |
 | `HERMES_CF_IMAGE` | An image name defined in `wrangler.jsonc`. |
-| `HERMES_CF_INSTANCE` | An instance type allowed by `ALLOWED_INSTANCE_TYPES`. |
+| `HERMES_CF_INSTANCE` | `lite` or `standard-1` to `standard-4`, and also listed in `ALLOWED_INSTANCE_TYPES`. |
 | `HERMES_CF_ACCESS_CLIENT_ID`, `HERMES_CF_ACCESS_CLIENT_SECRET` | A Cloudflare Access service token, if the Worker is behind Access. |
 
 Hermes' generic container image, CPU, memory and disk settings are not used.
@@ -123,7 +125,7 @@ The bearer token gives full control: whoever holds it can run any command in eve
 
 The token is never passed into the container, but anything you write inside the container ends up in snapshots.
 
-Hermes' approval prompts stay on, so in unattended runs such as `hermes chat -q`, `execute_code` is blocked unless you allow it in Hermes' approval settings or with `--yolo`.
+Hermes still asks for approval before dangerous commands, so in unattended runs such as `hermes chat -q`, `execute_code` is blocked unless you allow it in Hermes' approval settings or with `--yolo`.
 
 ## Limits and behavior
 

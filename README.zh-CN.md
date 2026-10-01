@@ -86,6 +86,8 @@ hermes config set terminal.container_persistent true
 
 ## 3. 验证
 
+请在仓库根目录下运行：
+
 ```bash
 python scripts/check_hermes_contract.py --hermes-source /path/to/hermes-agent
 python scripts/smoke.py --live
@@ -99,7 +101,7 @@ python scripts/smoke.py --live
 
 当 `container_persistent: false` 时，会话结束时会删除工作区。
 
-会话结束时，或大约 10 分钟没有命令时，工作区会保存为 snapshot，然后容器停止。如果保存失败，容器会继续运行，并重试保存。
+会话结束时，或大约 10 分钟没有命令时（可通过 `wrangler.jsonc` 中的 `IDLE_SECONDS` 修改），工作区会保存为 snapshot，然后容器停止。如果保存失败，容器会继续运行，并重试保存。
 
 **snapshot 不能替代备份。** 它只包含文件，因此正在运行的进程（包括后台进程）不会保留。Cloudflare 会在 snapshot 创建或恢复 30 天后删除它。重要的成果请保存到 git。
 
@@ -112,7 +114,7 @@ python scripts/smoke.py --live
 | `terminal.container_persistent` | 在会话之间用 snapshot 保留工作区。 |
 | `terminal.cwd` | 容器内的工作目录，默认是 `/workspace`。 |
 | `HERMES_CF_IMAGE` | 在 `wrangler.jsonc` 中定义的镜像名称。 |
-| `HERMES_CF_INSTANCE` | `ALLOWED_INSTANCE_TYPES` 允许的实例类型。 |
+| `HERMES_CF_INSTANCE` | `lite` 或 `standard-1` 至 `standard-4`，且需在 `ALLOWED_INSTANCE_TYPES` 中允许。 |
 | `HERMES_CF_ACCESS_CLIENT_ID`、`HERMES_CF_ACCESS_CLIENT_SECRET` | Worker 受 Cloudflare Access 保护时使用的 service token。 |
 
 Hermes 通用的容器镜像、CPU、内存和磁盘设置不会被使用。
