@@ -75,7 +75,7 @@ git clone https://github.com/kiyo-e/hermes-cloudflare-sandbox.git \
   "${HERMES_HOME:-$HOME/.hermes}/plugins/cloudflare-sandbox"
 ```
 
-プロファイルの`.env`に、次の値を追記します（任意の設定は`.env.example`にあります）。
+プロファイルの`.env`に、次の値を追記します（任意の設定は`.env.sample`にあります）。
 
 ```dotenv
 HERMES_CF_ENDPOINT=https://your-worker.your-subdomain.workers.dev

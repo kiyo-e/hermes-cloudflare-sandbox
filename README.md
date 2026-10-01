@@ -66,7 +66,7 @@ git clone https://github.com/kiyo-e/hermes-cloudflare-sandbox.git \
   "${HERMES_HOME:-$HOME/.hermes}/plugins/cloudflare-sandbox"
 ```
 
-Add these to the profile's `.env` (optional settings are in `.env.example`):
+Add these to the profile's `.env` (optional settings are in `.env.sample`):
 
 ```dotenv
 HERMES_CF_ENDPOINT=https://your-worker.your-subdomain.workers.dev

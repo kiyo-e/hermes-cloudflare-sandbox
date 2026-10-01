@@ -66,7 +66,7 @@ git clone https://github.com/kiyo-e/hermes-cloudflare-sandbox.git \
   "${HERMES_HOME:-$HOME/.hermes}/plugins/cloudflare-sandbox"
 ```
 
-把以下内容追加到该 profile 的 `.env`（可选设置见 `.env.example`）：
+把以下内容追加到该 profile 的 `.env`（可选设置见 `.env.sample`）：
 
 ```dotenv
 HERMES_CF_ENDPOINT=https://your-worker.your-subdomain.workers.dev
