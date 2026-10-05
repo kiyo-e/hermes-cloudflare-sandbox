@@ -2,7 +2,7 @@
  * The production entry point passes the real ctx.container and ctx.storage.
  * `npm run typecheck` additionally checks these ports against wrangler types.
  */
-export type InstanceType = "lite" | "basic" | "standard-1" | "standard-2" | "standard-3" | "standard-4";
+export type InstanceType = "lite" | "standard-1" | "standard-2" | "standard-3" | "standard-4";
 export interface ProcessPort {
   stdin: WritableStream<Uint8Array> | null;
   stdout: ReadableStream<Uint8Array> | null;

@@ -114,7 +114,7 @@ If a container is lost before any snapshot exists, the Worker returns `workspace
 | `terminal.container_persistent` | Keep the workspace in snapshots between sessions. |
 | `terminal.cwd` | Working directory inside the container. Default `/workspace`. |
 | `HERMES_CF_IMAGE` | An image name defined in `wrangler.jsonc`. |
-| `HERMES_CF_INSTANCE` | `lite`, `basic` or `standard-1` to `standard-4`, and also listed in `ALLOWED_INSTANCE_TYPES`. |
+| `HERMES_CF_INSTANCE` | `lite` or `standard-1` to `standard-4`, and also listed in `ALLOWED_INSTANCE_TYPES`. |
 | `HERMES_CF_ACCESS_CLIENT_ID`, `HERMES_CF_ACCESS_CLIENT_SECRET` | A Cloudflare Access service token, if the Worker is behind Access. |
 
 Hermes' generic container image, CPU, memory and disk settings are not used.

@@ -114,7 +114,7 @@ python scripts/smoke.py --live
 | `terminal.container_persistent` | 在会话之间用 snapshot 保留工作区。 |
 | `terminal.cwd` | 容器内的工作目录，默认是 `/workspace`。 |
 | `HERMES_CF_IMAGE` | 在 `wrangler.jsonc` 中定义的镜像名称。 |
-| `HERMES_CF_INSTANCE` | `lite`、`basic` 或 `standard-1` 至 `standard-4`，且需在 `ALLOWED_INSTANCE_TYPES` 中允许。 |
+| `HERMES_CF_INSTANCE` | `lite` 或 `standard-1` 至 `standard-4`，且需在 `ALLOWED_INSTANCE_TYPES` 中允许。 |
 | `HERMES_CF_ACCESS_CLIENT_ID`、`HERMES_CF_ACCESS_CLIENT_SECRET` | Worker 受 Cloudflare Access 保护时使用的 service token。 |
 
 Hermes 通用的容器镜像、CPU、内存和磁盘设置不会被使用。
