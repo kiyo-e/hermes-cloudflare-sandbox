@@ -1,5 +1,6 @@
 import type { ContainerPort, ExecRequest, ProcessPort, Settings, StoragePort, WorkspaceConfig } from "./contracts.js";
-import { ApiError, errorResponse, execRequest, json, MAX_OUTPUT_CHARS, readJson, REQUEST_ID, workspaceConfig } from "./protocol.js";
+import { ApiError, errorResponse, execRequest, json, MAX_OUTPUT_CHARS, readJson, readRequest, REQUEST_ID, workspaceConfig } from "./protocol.js";
+import type { ReadRequest } from "./protocol.js";
 
 const encoder = new TextEncoder();
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
@@ -12,6 +13,8 @@ export const HARD_DEADLINE_GRACE_MS = 15_000;
 // the Worker-side backstop if a stream is still open well after the exit status.
 export const POST_EXIT_STREAM_MS = 7_000;
 const SUPERVISOR = "/usr/local/bin/hermes-exec";
+// A file read holds the workspace like a command; stop a stalled reader eventually.
+export const READ_TIMEOUT_MS = 600_000;
 
 /** Reject with `error` if `operation` has not settled within `ms`. */
 async function bounded<T>(operation: Promise<T>, ms: number, error: () => Error): Promise<T> {
@@ -111,6 +114,7 @@ export class SandboxService<S = unknown, I = string> {
         });
       }
       if (action === "exec") return await this.execute(execRequest(body));
+      if (action === "read") return await this.readFile(readRequest(body));
       if (action.startsWith("cancel/")) {
         const id = action.slice(7);
         if (!REQUEST_ID.test(id)) throw new ApiError(400, "invalid_field", "Invalid request_id");
@@ -263,6 +267,74 @@ export class SandboxService<S = unknown, I = string> {
       this.active.process?.kill(15); // supervisor forwards SIGTERM to its process group
     }
     return json({ ok: true });
+  }
+
+  /** Stream one regular file's raw bytes. No base64, no output-size cap beyond
+   * `max_bytes`; `X-File-Size` is the size checked before reading, and the stream
+   * errors (rather than ending short) if the file changes while it is read.
+   */
+  private async readFile(input: ReadRequest): Promise<Response> {
+    this.assertIdle();
+    const active: ActiveCommand = { id: "read", cancelled: false };
+    this.active = active; // Same lock as a command: one foreground operation per workspace.
+    let handedOff = false;
+    try {
+      const config = await this.config();
+      await this.touch();
+      await this.ensureRunning(config);
+      const stat = await this.container.exec(["/usr/bin/stat", "-L", "-c", "%s %F", "--", input.path],
+                                             { stdout: "pipe", stderr: "ignore" });
+      const [described, statCode] = await Promise.all([
+        stat.stdout ? new Response(stat.stdout).text() : Promise.resolve(""), stat.exitCode,
+      ]);
+      const match = /^(\d+) (.+)$/.exec(described.trim());
+      if (statCode !== 0 || !match) throw new ApiError(404, "file_not_found", "No such file");
+      if (match[2] !== "regular file" && match[2] !== "regular empty file") {
+        throw new ApiError(400, "not_a_file", "Not a regular file");
+      }
+      const size = Number(match[1]);
+      if (size > input.max_bytes) throw new ApiError(413, "file_too_large", `File is ${size} bytes`);
+      const cat = await this.container.exec(["/usr/bin/cat", "--", input.path], { stdout: "pipe", stderr: "ignore" });
+      if (!cat.stdout) throw new ApiError(503, "exec_failed", "Missing stdout stream");
+      active.process = cat;
+      const reader = cat.stdout.getReader();
+      let sent = 0, finished = false;
+      const finish = (kill: boolean) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        if (kill) { try { cat.kill(15); } catch { /* already gone */ } }
+        try { reader.releaseLock(); } catch { /* pending read */ }
+        if (this.active === active) this.active = null;
+        void this.touch().catch(() => {});
+      };
+      const timer = setTimeout(() => { void reader.cancel().catch(() => {}); finish(true); }, READ_TIMEOUT_MS);
+      const body = new ReadableStream<Uint8Array>({
+        pull: async controller => {
+          try {
+            const item = await reader.read();
+            if (item.done) {
+              const code = await cat.exitCode;
+              finish(false);
+              if (code !== 0 || sent !== size) controller.error(new Error("file changed or could not be read"));
+              else controller.close();
+              return;
+            }
+            sent += item.value.byteLength;
+            if (sent > size) { finish(true); controller.error(new Error("file grew while it was read")); return; }
+            controller.enqueue(item.value);
+          } catch (error) { finish(true); controller.error(error); }
+        },
+        cancel: () => finish(true),
+      });
+      handedOff = true;
+      return new Response(body, { headers: {
+        "Content-Type": "application/octet-stream", "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff", "X-File-Size": String(size),
+      } });
+    } finally {
+      if (!handedOff && this.active === active) this.active = null;
+    }
   }
 
   private async execute(input: ExecRequest): Promise<Response> {

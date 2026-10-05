@@ -36,6 +36,17 @@ export function completedProcess(text = "", code = 0, split = 8192) {
   };
 }
 
+export function completedBytes(bytes, split = 65_536) {
+  const process = completedProcess();
+  process.stdout = new ReadableStream({ start(controller) {
+    for (let i = 0; i < bytes.length; i += split) controller.enqueue(bytes.slice(i, i + split));
+    controller.close();
+  } });
+  process.killed = [];
+  process.kill = signal => process.killed.push(signal);
+  return process;
+}
+
 export function pendingProcess() {
   let finish;
   let controller;
@@ -64,6 +75,8 @@ export class FakeContainer {
   processes = [];
   failSnapshot = false;
   failProbe = 0;
+  files = {};
+  readers = [];
   stdin = null;
   onSnapshot = null;
   async setInactivityTimeout(ms) {
@@ -76,6 +89,17 @@ export class FakeContainer {
     this.commands.push({ command, options });
     if (!this.running) throw new Error("container not running");
     if (command[0] === "/bin/true" && this.failProbe-- > 0) throw new Error("not ready");
+    if (command[0] === "/usr/bin/stat") {
+      const file = this.files[command.at(-1)];
+      return file === undefined ? completedProcess("", 1)
+        : completedProcess(typeof file === "number" ? `${file} regular file\n` : `${file.length} regular file\n`);
+    }
+    if (command[0] === "/usr/bin/cat") {
+      const file = this.files[command.at(-1)];
+      const process = completedBytes(file instanceof Uint8Array ? file : new Uint8Array(0));
+      this.readers.push(process);
+      return process;
+    }
     if (command[0] !== "/usr/local/bin/hermes-exec") return completedProcess();
     const process = this.processes.shift() ?? completedProcess("hello\n");
     this.stdin = process.stdinChunks;

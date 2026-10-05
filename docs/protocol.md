@@ -15,6 +15,7 @@ by the client. CORS is intentionally not enabled.
 | POST | `/v1/sandboxes/{id}` | Create immutable workspace metadata, without booting a VM. |
 | GET | `/v1/sandboxes/{id}` | Read config, running/busy state and last snapshot timestamp. |
 | POST | `/v1/sandboxes/{id}/exec` | Execute one command; return an NDJSON stream. |
+| POST | `/v1/sandboxes/{id}/read` | Stream one regular file's raw bytes. |
 | POST | `/v1/sandboxes/{id}/cancel/{request_id}` | Cancel one command; can arrive before exec. |
 | POST | `/v1/sandboxes/{id}/checkpoint` | Save a persistent workspace without stopping it. |
 | POST | `/v1/sandboxes/{id}/release` | Save/stop persistent workspaces; delete ephemeral workspaces. |
@@ -33,6 +34,14 @@ Initialization body:
 The image must exist in the deployed named image map. The instance must be in the
 operator's allowlist. A changed configuration on an existing workspace is a 409,
 not an implicit reimage, resize or data deletion.
+
+File read body: `{"path":"/workspace/out.zip","max_bytes":26214400}`. The path is
+absolute; `max_bytes` defaults to and may not exceed 1 GiB. The response is
+`application/octet-stream` with `X-File-Size` (checked before reading); it is not
+subject to the exec output limit or base64. 404 `file_not_found`, 400
+`not_a_file`, 413 `file_too_large`. The read holds the workspace like a command
+(409 while busy). If the file changes while it is read, the stream errors
+instead of ending short, so a complete body always matches `X-File-Size`.
 
 Execution body:
 

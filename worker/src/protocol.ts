@@ -4,6 +4,7 @@ export const MAX_BODY_BYTES = 1_048_576;
 export const MAX_COMMAND_BYTES = 65_536;
 export const MAX_TIMEOUT_SECONDS = 900;
 export const MAX_OUTPUT_CHARS = 2_000_000;
+export const MAX_READ_BYTES = 1024 ** 3;
 export const INSTANCES = new Set<InstanceType>(["lite", "standard-1", "standard-2", "standard-3", "standard-4"]);
 export const REQUEST_ID = /^[a-f0-9]{32}$/;
 export const SANDBOX_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -105,6 +106,18 @@ export function execRequest(data: Record<string, unknown>): ExecRequest {
   if (typeof login !== "boolean") throw new ApiError(400, "invalid_field", "login must be boolean");
   const stdin = data.stdin == null ? null : text(data.stdin, "stdin", 786_432, true);
   return { request_id, command, timeout, login, stdin };
+}
+
+export interface ReadRequest { path: string; max_bytes: number }
+export function readRequest(data: Record<string, unknown>): ReadRequest {
+  knownKeys(data, ["path", "max_bytes"]);
+  const path = text(data.path, "path", 4096);
+  if (!path.startsWith("/")) throw new ApiError(400, "invalid_field", "path must be absolute");
+  const max = data.max_bytes ?? MAX_READ_BYTES;
+  if (typeof max !== "number" || !Number.isInteger(max) || max < 0 || max > MAX_READ_BYTES) {
+    throw new ApiError(400, "invalid_field", `max_bytes must be an integer from 0 to ${MAX_READ_BYTES}`);
+  }
+  return { path, max_bytes: max };
 }
 
 export async function authorized(request: Request, secret: string | undefined): Promise<boolean> {

@@ -15,7 +15,7 @@ export async function route(request: Request, env: GatewayEnv): Promise<Response
     if (url.pathname === "/health" && request.method === "GET") {
       return json({ ok: true, protocol: 1 }); // Deliberately does not start compute.
     }
-    const match = /^\/v1\/sandboxes\/([^/]+)(?:\/(exec|release|checkpoint|cancel\/([a-f0-9]{32})))?$/.exec(url.pathname);
+    const match = /^\/v1\/sandboxes\/([^/]+)(?:\/(exec|read|release|checkpoint|cancel\/([a-f0-9]{32})))?$/.exec(url.pathname);
     if (!match || !SANDBOX_ID.test(match[1]) || url.search) throw new ApiError(404, "not_found", "Not found");
     const action = match[2] ?? (request.method === "GET" ? "status" : request.method === "DELETE" ? "reset" : "init");
     const expected = action === "status" ? "GET" : action === "reset" ? "DELETE" : "POST";
