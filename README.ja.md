@@ -134,7 +134,7 @@ snapshotが一つもないままContainerが失われた場合、Workerは空の
 | `terminal.container_persistent` | セッションをまたいでワークスペースをsnapshotに残します。 |
 | `terminal.cwd` | Container内の作業ディレクトリです。既定は`/workspace`です。 |
 | `HERMES_CF_IMAGE` | `wrangler.jsonc`で定義したイメージの名前です。 |
-| `HERMES_CF_INSTANCE` | `lite`、`standard-1`〜`standard-4`のうち、`ALLOWED_INSTANCE_TYPES`で許可した種類です。 |
+| `HERMES_CF_INSTANCE` | `lite`、`basic`、`standard-1`〜`standard-4`のうち、`ALLOWED_INSTANCE_TYPES`で許可した種類です。 |
 | `HERMES_CF_ACCESS_CLIENT_ID`、`HERMES_CF_ACCESS_CLIENT_SECRET` | WorkerをCloudflare Accessで保護している場合のservice tokenです。 |
 
 Hermesの汎用のContainerイメージ、CPU、メモリ、diskの設定は使いません。

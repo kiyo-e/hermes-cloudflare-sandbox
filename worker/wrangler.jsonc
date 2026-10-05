@@ -14,7 +14,7 @@
   }],
   "vars": {
     "DEFAULT_INSTANCE_TYPE": "standard-1",
-    "ALLOWED_INSTANCE_TYPES": "lite,standard-1",
+    "ALLOWED_INSTANCE_TYPES": "lite,basic,standard-1,standard-2,standard-3,standard-4",
     // Explicit operator choice: package installation and git require outbound access.
     "ENABLE_INTERNET": "true",
     "IDLE_SECONDS": "600"
