@@ -17,6 +17,15 @@ const SUPERVISOR = "/usr/local/bin/hermes-exec";
 export const READ_TIMEOUT_MS = 600_000;
 // How often a running command checks that its container is still alive.
 export const LOST_POLL_MS = 2_000;
+// A container can also hang without stopping (seen on lite under memory pressure):
+// the native stream stays open and only the hard deadline would end it. While a
+// command runs, probe the container with a no-op every LIVENESS_INTERVAL_MS; after
+// LIVENESS_FAILURES probes in a row with no answer within LIVENESS_TIMEOUT_MS the
+// container is destroyed and the command ends as workspace_lost. Idle workspaces
+// are never probed, so the idle checkpoint is unaffected.
+export const LIVENESS_INTERVAL_MS = 60_000;
+export const LIVENESS_TIMEOUT_MS = 30_000;
+export const LIVENESS_FAILURES = 2;
 
 /** Reject with `error` if `operation` has not settled within `ms`. */
 async function bounded<T>(operation: Promise<T>, ms: number, error: () => Error): Promise<T> {
@@ -395,12 +404,40 @@ export class SandboxService<S = unknown, I = string> {
         // A container that dies mid-command (e.g. out of memory) never closes the native
         // stream; without this the client waits for the hard deadline. Report the loss now.
         let lostTimer: ReturnType<typeof setInterval> | undefined;
+        let livenessTimer: ReturnType<typeof setInterval> | undefined;
+        let markLost!: (message: string) => void;
         const lost = new Promise<never>((_, reject) => {
+          markLost = message => reject(new ApiError(409, "workspace_lost", message));
           lostTimer = setInterval(() => {
-            if (!this.container.running) reject(new ApiError(409, "workspace_lost", "Container stopped during the command"));
+            if (!this.container.running) markLost("Container stopped during the command");
           }, LOST_POLL_MS);
         });
         void lost.catch(() => {});
+        const startLiveness = () => {
+          let probing = false, misses = 0;
+          livenessTimer = setInterval(() => {
+            if (probing || !this.container.running) return;
+            probing = true;
+            void (async () => {
+              try {
+                const deadline = Date.now() + LIVENESS_TIMEOUT_MS;
+                const probe = await bounded(this.container.exec(["/bin/true"], { stdout: "ignore", stderr: "ignore" }),
+                                            LIVENESS_TIMEOUT_MS, () => new Error("probe hung"));
+                await bounded(probe.exitCode, deadline - Date.now(), () => new Error("probe did not finish"));
+                misses = 0;
+              } catch {
+                if (++misses < LIVENESS_FAILURES || !this.container.running) return;
+                console.error("container unresponsive during a command; destroying", JSON.stringify({ request_id: input.request_id }));
+                active.cancelled = true;
+                try {
+                  await bounded(this.container.destroy("Container stopped responding"), GRACE_MS * 6,
+                                () => new Error("destroy hung"));
+                } catch { /* reported as lost either way */ }
+                markLost("Container stopped responding during the command");
+              } finally { probing = false; }
+            })();
+          }, LIVENESS_INTERVAL_MS);
+        };
         let hardTimer: ReturnType<typeof setTimeout> | undefined;
         let stuckTimer: ReturnType<typeof setTimeout> | undefined;
         const pump = async () => {
@@ -428,6 +465,7 @@ export class SandboxService<S = unknown, I = string> {
             active.process = process;
             if (active.cancelled || disconnected) process.kill(15);
             send({ type: "started", request_id: input.request_id });
+            startLiveness();
             const writing = (async () => {
               if (input.stdin !== null && process.stdin) {
                 const writer = process.stdin.getWriter();
@@ -501,6 +539,8 @@ export class SandboxService<S = unknown, I = string> {
           } finally {
             clearInterval(heartbeat);
             if (lostTimer) clearInterval(lostTimer);
+          if (livenessTimer) clearInterval(livenessTimer);
+            if (livenessTimer) clearInterval(livenessTimer);
             if (hardTimer) clearTimeout(hardTimer);
             if (stuckTimer) clearTimeout(stuckTimer);
             if (this.active === active) this.active = null;
@@ -513,6 +553,7 @@ export class SandboxService<S = unknown, I = string> {
         void pump().catch(() => {
           clearInterval(heartbeat);
           if (lostTimer) clearInterval(lostTimer);
+          if (livenessTimer) clearInterval(livenessTimer);
           if (hardTimer) clearTimeout(hardTimer);
           if (this.active === active) this.active = null;
           if (!disconnected && !closed) { send({ type: "error", code: "exec_failed" }); closed = true; controller.close(); }

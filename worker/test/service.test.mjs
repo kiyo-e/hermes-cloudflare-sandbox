@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { SandboxService, LOST_POLL_MS } from "../dist-test/service.js";
+import { SandboxService, LOST_POLL_MS, LIVENESS_INTERVAL_MS, LIVENESS_TIMEOUT_MS } from "../dist-test/service.js";
 import { MAX_OUTPUT_CHARS } from "../dist-test/protocol.js";
 import { MemoryStorage, FakeContainer, SETTINGS, request, execution, collect, completedProcess, pendingProcess } from "./fakes.mjs";
 
@@ -257,4 +257,61 @@ test("a container that dies mid-command is reported as lost at once, not at the 
   // The workspace is free again, and the next command reports the loss immediately.
   const next = await execute(service);
   assert.equal(next.at(-1).code, "workspace_lost");
+});
+
+async function drain(reader) {
+  const events = [];
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return events;
+    events.push(...new TextDecoder().decode(value).trim().split("\n").filter(Boolean).map(l => JSON.parse(l)));
+  }
+}
+const flush = async () => { for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r)); };
+
+test("a container that hangs mid-command is destroyed after two unanswered probes", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const { service, container } = await setup();
+  const pending = pendingProcess();
+  container.processes.push(pending);
+  const response = await service.fetch(request("exec", execution({ timeout: 900 })));
+  const reader = response.body.getReader();
+  await reader.read(); // started
+  const original = container.exec.bind(container);
+  container.exec = async (command, options) =>
+    command[0] === "/bin/true" ? new Promise(() => {}) : original(command, options); // hung
+  // Advance one second at a time so timers created inside callbacks run in order.
+  const advance = async ms => { for (let i = 0; i < ms / 1000; i++) { t.mock.timers.tick(1000); await flush(); } };
+  await advance(LIVENESS_INTERVAL_MS + LIVENESS_TIMEOUT_MS + 1000);
+  assert.equal(container.log.includes("destroy"), false, "one miss is not enough");
+  await advance(LIVENESS_INTERVAL_MS + LIVENESS_TIMEOUT_MS);
+  assert.equal(container.log.includes("destroy"), true, "two misses in a row destroy the container");
+  const events = await drain(reader);
+  assert.equal(events.at(-1).code, "workspace_lost");
+});
+
+test("a busy but responsive container is never destroyed by the liveness probe", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const { service, container } = await setup();
+  const pending = pendingProcess();
+  container.processes.push(pending);
+  const response = await service.fetch(request("exec", execution({ timeout: 900 })));
+  const reader = response.body.getReader();
+  await reader.read();
+  for (let i = 0; i < 5; i++) { t.mock.timers.tick(LIVENESS_INTERVAL_MS); await flush(); }
+  assert.equal(container.log.includes("destroy"), false);
+  assert.ok(container.commands.filter(c => c.command[0] === "/bin/true").length >= 5);
+  pending.finish(0);
+  const events = await drain(reader);
+  assert.equal(events.at(-1).type, "exit");
+});
+
+test("an idle workspace is not probed", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const { service, container } = await setup();
+  await execute(service);
+  const probes = container.commands.filter(c => c.command[0] === "/bin/true").length;
+  t.mock.timers.tick(LIVENESS_INTERVAL_MS * 5);
+  await flush();
+  assert.equal(container.commands.filter(c => c.command[0] === "/bin/true").length, probes);
 });
