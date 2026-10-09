@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { SandboxService } from "../dist-test/service.js";
+import { SandboxService, LOST_POLL_MS } from "../dist-test/service.js";
 import { MAX_OUTPUT_CHARS } from "../dist-test/protocol.js";
 import { MemoryStorage, FakeContainer, SETTINGS, request, execution, collect, completedProcess, pendingProcess } from "./fakes.mjs";
 
@@ -234,4 +234,27 @@ test("an alarm for a workspace that already lost its container does not retry fo
   await service.alarm(); // resolves: a thrown alarm would be retried by the platform
   assert.equal(storage.alarm, null);
   assert.ok(await storage.get("config"), "workspace metadata is kept so the loss is reported, not hidden");
+});
+
+test("a container that dies mid-command is reported as lost at once, not at the hard deadline", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const { service, container } = await setup();
+  const pending = pendingProcess();
+  container.processes.push(pending);
+  const response = await service.fetch(request("exec", execution({ timeout: 900 })));
+  const reader = response.body.getReader();
+  await reader.read(); // started
+  container.running = false; // e.g. killed for memory; the native stream never ends
+  t.mock.timers.tick(LOST_POLL_MS);
+  const events = [];
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    events.push(...new TextDecoder().decode(value).trim().split("\n").map(l => JSON.parse(l)));
+  }
+  assert.equal(events.at(-1).code, "workspace_lost");
+  assert.equal(pending.signals.length, 0, "no kill is sent to a container that is gone");
+  // The workspace is free again, and the next command reports the loss immediately.
+  const next = await execute(service);
+  assert.equal(next.at(-1).code, "workspace_lost");
 });

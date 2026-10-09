@@ -15,6 +15,8 @@ export const POST_EXIT_STREAM_MS = 7_000;
 const SUPERVISOR = "/usr/local/bin/hermes-exec";
 // A file read holds the workspace like a command; stop a stalled reader eventually.
 export const READ_TIMEOUT_MS = 600_000;
+// How often a running command checks that its container is still alive.
+export const LOST_POLL_MS = 2_000;
 
 /** Reject with `error` if `operation` has not settled within `ms`. */
 async function bounded<T>(operation: Promise<T>, ms: number, error: () => Error): Promise<T> {
@@ -390,6 +392,15 @@ export class SandboxService<S = unknown, I = string> {
           if (!disconnected && !closed) controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
         };
         const heartbeat = setInterval(() => send({ type: "heartbeat" }), 10_000);
+        // A container that dies mid-command (e.g. out of memory) never closes the native
+        // stream; without this the client waits for the hard deadline. Report the loss now.
+        let lostTimer: ReturnType<typeof setInterval> | undefined;
+        const lost = new Promise<never>((_, reject) => {
+          lostTimer = setInterval(() => {
+            if (!this.container.running) reject(new ApiError(409, "workspace_lost", "Container stopped during the command"));
+          }, LOST_POLL_MS);
+        });
+        void lost.catch(() => {});
         let hardTimer: ReturnType<typeof setTimeout> | undefined;
         let stuckTimer: ReturnType<typeof setTimeout> | undefined;
         const pump = async () => {
@@ -413,7 +424,7 @@ export class SandboxService<S = unknown, I = string> {
             void launched.then(process => {
               if (active.cancelled || disconnected) { try { process.kill(15); } catch { /* stopped */ } }
             }, () => {});
-            const process = await Promise.race([launched, hardDeadline, aborted]);
+            const process = await Promise.race([launched, hardDeadline, aborted, lost]);
             active.process = process;
             if (active.cancelled || disconnected) process.kill(15);
             send({ type: "started", request_id: input.request_id });
@@ -468,11 +479,12 @@ export class SandboxService<S = unknown, I = string> {
               return code;
             });
             const results = await Promise.race([
-              Promise.all([streamEnded, writing]), hardDeadline, aborted,
+              Promise.all([streamEnded, writing]), hardDeadline, aborted, lost,
             ]);
             send({ type: "exit", exit_code: results[0] });
           } catch (error) {
-            if (active.process) {
+            // A dead container has no process left to stop; do not wait for one.
+            if (active.process && this.container.running) {
               try { active.process.kill(15); } catch { /* process already gone */ }
               // Kill escalation applies to failed output/streams as well as explicit cancel.
               const process = active.process;
@@ -488,6 +500,7 @@ export class SandboxService<S = unknown, I = string> {
             send({ type: "error", code: error instanceof ApiError ? error.code : "exec_failed" });
           } finally {
             clearInterval(heartbeat);
+            if (lostTimer) clearInterval(lostTimer);
             if (hardTimer) clearTimeout(hardTimer);
             if (stuckTimer) clearTimeout(stuckTimer);
             if (this.active === active) this.active = null;
@@ -499,6 +512,7 @@ export class SandboxService<S = unknown, I = string> {
         // The live response stream owns this execution, not an untracked fire-and-forget job.
         void pump().catch(() => {
           clearInterval(heartbeat);
+          if (lostTimer) clearInterval(lostTimer);
           if (hardTimer) clearTimeout(hardTimer);
           if (this.active === active) this.active = null;
           if (!disconnected && !closed) { send({ type: "error", code: "exec_failed" }); closed = true; controller.close(); }
