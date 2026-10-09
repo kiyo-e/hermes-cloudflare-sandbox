@@ -8,7 +8,13 @@ const STARTUP_MS = 60_000;
 const GRACE_MS = 5_000;
 // The supervisor needs up to ~4 s to escalate a timeout and up to 5 s to drain a
 // noisy background job after a normal exit; the hard stop must not race either.
-export const HARD_DEADLINE_GRACE_MS = 15_000;
+// Under load (lite, a big install) the supervisor did not report its own timeout
+// within 15 s, and the old 5 s kill budget then destroyed the workspace.
+// Worst case before the client hears back: timeout + 30 s + 30 s, inside the
+// Hermes client's read window (timeout + 75 s).
+export const HARD_DEADLINE_GRACE_MS = 30_000;
+// Total time for the targeted kill of one command before the container is destroyed.
+export const KILL_GRACE_MS = 30_000;
 // hermes-exec closes its stdout at most DRAIN_GRACE (5 s) after Bash exits. This is
 // the Worker-side backstop if a stream is still open well after the exit status.
 export const POST_EXIT_STREAM_MS = 7_000;
@@ -380,10 +386,11 @@ export class SandboxService<S = unknown, I = string> {
   private async stopCommand(requestId: string, reason: string): Promise<void> {
     if (!this.container.running) return;
     try {
+      const deadline = Date.now() + KILL_GRACE_MS;
       const killer = await bounded(
         this.container.exec([SUPERVISOR, "--kill", requestId], { stdout: "ignore", stderr: "ignore" }),
-        GRACE_MS, () => new Error("kill request hung"));
-      if (await bounded(killer.exitCode, GRACE_MS, () => new Error("kill did not finish")) === 0) return;
+        KILL_GRACE_MS, () => new Error("kill request hung"));
+      if (await bounded(killer.exitCode, deadline - Date.now(), () => new Error("kill did not finish")) === 0) return;
     } catch { /* fall through to the last resort */ }
     await this.container.destroy(reason);
   }

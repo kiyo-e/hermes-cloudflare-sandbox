@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ReadableStream } from "node:stream/web";
-import { SandboxService, HARD_DEADLINE_GRACE_MS, POST_EXIT_STREAM_MS } from "../dist-test/service.js";
+import { SandboxService, HARD_DEADLINE_GRACE_MS, KILL_GRACE_MS, POST_EXIT_STREAM_MS } from "../dist-test/service.js";
 import { MemoryStorage, FakeContainer, SETTINGS, request, execution, collect, completedProcess } from "./fakes.mjs";
 
 const SUPERVISOR = "/usr/local/bin/hermes-exec";
@@ -69,7 +69,7 @@ test("hard deadline destroys the container only when the targeted kill hangs", a
   await settle(() => launched);
   t.mock.timers.tick(100 + HARD_DEADLINE_GRACE_MS + 1);
   await settle(() => killRequested);
-  t.mock.timers.tick(5001);
+  t.mock.timers.tick(KILL_GRACE_MS + 1);
   const events = await result;
   assert.equal(events.at(-1).code, "hard_timeout");
   assert.equal(container.running, false);
