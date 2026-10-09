@@ -47,6 +47,8 @@ npx wrangler login
 npm run deploy
 ```
 
+The container base image is pinned by digest in `worker/container/Dockerfile`. A changed image replaces running containers, and files not yet saved to a snapshot are lost, so update the pin deliberately. For Worker-only changes, `npm run deploy:worker` deploys without touching containers.
+
 The Worker rejects every request until a secret is set. Generate one and store it:
 
 ```bash

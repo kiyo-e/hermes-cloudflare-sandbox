@@ -1,4 +1,6 @@
-FROM node:24-trixie-slim
+# Base pinned by digest: an unpinned tag silently changes the image, and a new image
+# replaces running workspaces (unsaved files are lost). Update deliberately.
+FROM node:24-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash ca-certificates curl git python3 python3-venv python-is-python3 \

@@ -9,7 +9,8 @@
     "deploy": "wrangler deploy",
     "types": "wrangler types",
     "typecheck": "wrangler types && tsc --noEmit -p tsconfig.json",
-    "test": "tsc -p tsconfig.test.json && node --test test/*.test.mjs"
+    "test": "tsc -p tsconfig.test.json && node --test test/*.test.mjs",
+    "deploy:worker": "wrangler deploy --containers-rollout none"
   },
   "devDependencies": {
     "typescript": "^5.8.0",

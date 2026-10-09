@@ -52,6 +52,8 @@ npx wrangler login
 npm run deploy
 ```
 
+コンテナの土台（ベースイメージ）は `worker/container/Dockerfile` で digest に固定しています。イメージが変わると動いているコンテナが入れ替わり、まだスナップショットに保存していないファイルは失われます。固定を変えるときは意図して行ってください。Worker のコードだけを変えたときは、`npm run deploy:worker` でコンテナに触れずに配備できます。
+
 secretを設定するまで、Workerはすべてのリクエストを拒否します。
 secretを生成して登録します。
 
