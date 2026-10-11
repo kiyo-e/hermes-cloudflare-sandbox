@@ -6,7 +6,7 @@
 # Mirrors the Worker (worker/src/service.ts): the container runs the image's
 # own default command, and each probe is a separate exec with the argv the
 # Worker uses. Request ids are 32 lowercase hex digits, like the ones the
-# Hermes plugin (uuid4().hex) and cf-hermes send.
+# Hermes plugin (uuid4().hex).
 set -eu
 image=${1:?usage: check-image.sh IMAGE [CWD]}
 cwd=${2:-/workspace}
@@ -33,8 +33,10 @@ x /bin/sync || fail "missing /bin/sync (snapshot flush)"
 for tool in "$supervisor" /usr/bin/stat /usr/bin/cat; do
   x /bin/bash -c 'test -x "$1"' bash "$tool" || fail "missing /bin/bash or $tool"
 done
-x /bin/bash -c 'for t in base64 mktemp realpath find printf python3; do command -v "$t" >/dev/null || { echo "missing $t"; exit 1; }; done' \
-  || fail "missing a tool used by file operations"
+# Programs Hermes core runs inside the sandbox (session snapshot, file tools,
+# file sync, execute_code). rg is optional: Hermes falls back to grep.
+x /bin/bash -c 'for t in awk base64 cat chmod cut find grep head kill ls mkdir mktemp mv od python3 readlink realpath rm sed sha256sum stat tail tar timeout wc; do command -v "$t" >/dev/null || { echo "missing $t" >&2; exit 1; }; done' \
+  || fail "missing a program Hermes runs in the sandbox"
 
 # A command exactly as the Worker launches it: --id, timeout, -c, in cwd.
 out=$(docker exec -w "$cwd" "$name" "$supervisor" --id "$(request_id)" 5 -c \

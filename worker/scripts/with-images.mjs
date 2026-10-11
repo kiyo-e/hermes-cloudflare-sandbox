@@ -5,7 +5,7 @@
 //   npx wrangler deploy --config wrangler.generated.jsonc
 //
 // images.json maps a name to exactly one source, as in wrangler's `images`:
-//   { "cf-hermes": { "dockerfile": "/abs/or/relative/Dockerfile", "build_context": "..." },
+//   { "extra": { "dockerfile": "/abs/or/relative/Dockerfile", "build_context": "..." },
 //     "tools": { "image": "registry.cloudflare.com/<account>/<repo>@sha256:<digest>" } }
 // Relative paths are resolved from the directory of images.json. The built-in
 // "hermes" image cannot be replaced. See docs/custom-images.md.

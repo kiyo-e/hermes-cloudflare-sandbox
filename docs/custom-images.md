@@ -1,23 +1,28 @@
 # Custom images
 
-A workspace runs the named image chosen when it is created
-(`{"image": "<name>"}` in the init body, or `HERMES_CF_IMAGE` in Hermes). The
-built-in image is `hermes`. You can add your own images, for example with extra
-tools, without changing this repository.
+A workspace runs the named image chosen when it is created. In Hermes, set
+`HERMES_CF_IMAGE` (default `hermes`, the built-in image); other bridge clients
+send `{"image": "<name>"}` in the init body. You can add your own images, for
+example with extra tools, without changing this repository. Nothing changes for
+existing setups: `hermes` stays the default and is never replaced.
 
 ## Contract
 
-The Worker talks to the container only through `exec`. An image must provide:
+The Worker reaches the container only through `exec`, and Hermes runs its
+terminal, file tools and `execute_code` as Bash scripts through the Worker. An
+image must provide:
 
-| Requirement | Why |
+| Requirement | Used by |
 | --- | --- |
-| `linux/amd64` | Cloudflare Containers run amd64. |
-| `/usr/local/bin/hermes-exec` from the same release as the Worker | Runs every command (timeouts, cancellation, output). Without it every command fails to start. |
-| `python3` (for `hermes-exec`) and `/bin/bash` | Commands are Bash scripts. |
-| `/bin/true`, `/bin/mkdir`, `/bin/sync`, `/usr/bin/stat`, `/usr/bin/cat` | Readiness probe, working directory, snapshot flush, file reads. |
-| `base64`, `mktemp`, `realpath`, `find`, `printf` on `PATH` | File tools of the clients. |
-| A writable working directory (default `/workspace`) for the image user | Where commands run. |
+| `linux/amd64` | Cloudflare Containers. |
 | A long-running default command (e.g. `sleep infinity`) | The container must stay up between commands. |
+| `/usr/local/bin/hermes-exec` from the same release as the Worker, and `python3` | Runs every command (timeouts, cancellation by request id, output). |
+| `/bin/bash`, `/bin/true`, `/bin/mkdir`, `/bin/sync`, `/usr/bin/stat`, `/usr/bin/cat` | Worker: commands, readiness probe, working directory, snapshot flush, file reads. |
+| GNU coreutils, `grep`, `sed`, `find`, `tar` on `PATH` | Hermes: session snapshot, file read/write/patch, file sync. |
+| A working directory (default `/workspace`) the image user can enter and write | Where commands run. |
+
+Hermes uses `rg` (ripgrep) for search when present and falls back to `grep`;
+`execute_code` needs `python3`. The base image has all of the above.
 
 The easiest way to meet it is to start from the base image and add to it.
 `worker/scripts/check-image.sh IMAGE [CWD]` checks a locally built image

@@ -12,14 +12,14 @@ test("the repository wrangler.jsonc parses and keeps the built-in image", () => 
 
 test("custom images are added; relative paths resolve from the images file", () => {
   const out = withImages(config, {
-    "cf-hermes": { dockerfile: "img/Dockerfile" },
+    extra: { dockerfile: "img/Dockerfile" },
     tools: { image: `registry.cloudflare.com/acct/repo@sha256:${"a".repeat(64)}` },
   }, "/ops");
   const images = out.containers[0].images;
-  assert.deepEqual(images["cf-hermes"], { dockerfile: "/ops/img/Dockerfile", build_context: "/ops/img" });
+  assert.deepEqual(images.extra, { dockerfile: "/ops/img/Dockerfile", build_context: "/ops/img" });
   assert.equal(images.tools.image.endsWith("a".repeat(64)), true);
   assert.equal(images.hermes.dockerfile, "./container/Dockerfile");
-  assert.equal(config.containers[0].images["cf-hermes"], undefined); // input untouched
+  assert.equal(config.containers[0].images.extra, undefined); // input untouched
 });
 
 test("unsafe or ambiguous image entries are refused", () => {
