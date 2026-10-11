@@ -1,32 +1,28 @@
 # Custom images
 
-A workspace runs the named image chosen when it is created. In Hermes, set
-`HERMES_CF_IMAGE` (default `hermes`, the built-in image); other bridge clients
-send `{"image": "<name>"}` in the init body. You can add your own images, for
-example with extra tools, without changing this repository. Nothing changes for
-existing setups: `hermes` stays the default and is never replaced.
+Hermes runs its terminal in the image named by `HERMES_CF_IMAGE` (default
+`hermes`, the built-in image). You can add your own images, for example with
+extra tools, without changing this repository. Nothing changes for existing
+setups: `hermes` stays the default and is never replaced.
 
-## Contract
+## What Hermes needs from an image
 
-The Worker reaches the container only through `exec`, and Hermes runs its
-terminal, file tools and `execute_code` as Bash scripts through the Worker. An
-image must provide:
+Build `FROM` the base image (below) and add to it. The base image provides
+everything Hermes needs:
 
-| Requirement | Used by |
+| Requirement | Why |
 | --- | --- |
-| `linux/amd64` | Cloudflare Containers. |
-| A long-running default command (e.g. `sleep infinity`) | The container must stay up between commands. |
-| `/usr/local/bin/hermes-exec` from the same release as the Worker, and `python3` | Runs every command (timeouts, cancellation by request id, output). |
-| `/bin/bash`, `/bin/true`, `/bin/mkdir`, `/bin/sync`, `/usr/bin/stat`, `/usr/bin/cat` | Worker: commands, readiness probe, working directory, snapshot flush, file reads. |
-| GNU coreutils, `grep`, `sed`, `find`, `tar` on `PATH` | Hermes: session snapshot, file read/write/patch, file sync. |
-| A working directory (default `/workspace`) the image user can enter and write | Where commands run. |
+| `linux/amd64` | Cloudflare Containers run only this platform. |
+| The base image's default command | The container stays up between Hermes commands. |
+| `/usr/local/bin/hermes-exec` and `python3` | Runs each terminal command, applies its timeout, and stops it on interrupt. |
+| Bash, GNU coreutils, `grep`, `sed`, `awk`, `find`, `tar` | Hermes' shell snapshot, file read/write/patch, and file sync. |
+| `python3` | `execute_code`. |
+| `terminal.cwd` (default `/workspace`) that the image user can enter and write | Where commands run. |
 
-Hermes uses `rg` (ripgrep) for search when present and falls back to `grep`;
-`execute_code` needs `python3`. The base image has all of the above.
+Hermes uses `rg` (ripgrep) for search when present and falls back to `grep`.
 
-The easiest way to meet it is to start from the base image and add to it.
 `worker/scripts/check-image.sh IMAGE [CWD]` checks a locally built image
-(`CWD` defaults to `/workspace`).
+(`CWD` is your `terminal.cwd`, default `/workspace`).
 
 ## Start from the base image
 
@@ -47,16 +43,16 @@ USER hermes
 ```
 
 Keep `USER hermes`, `WORKDIR /workspace` and the default command from the base
-unless you mean to change them. If you copy `hermes-exec` into another base
-image instead, take it from the same release as the Worker you deploy.
+unless you mean to change them. Use the base image from the same release as
+the plugin.
 
 Cloudflare cannot pull from GHCR directly. The image is built locally `FROM`
-the base and uploaded by `wrangler deploy`.
+the base and uploaded when you deploy.
 
 ## Register images
 
-Images are part of the Worker deployment. Do not edit `wrangler.jsonc`; list
-your images in a separate file:
+Images are deployed together with the sandbox. Do not edit `wrangler.jsonc`;
+list your images in a separate file:
 
 ```json
 {
@@ -78,13 +74,17 @@ node scripts/with-images.mjs /path/to/images.json   # writes worker/wrangler.gen
 npx wrangler deploy --config wrangler.generated.jsonc
 ```
 
+Then set `HERMES_CF_IMAGE=tools` (the name in the file) in the Hermes
+profile's `.env`.
+
 Always deploy with the same image list. A deploy without it removes those
-names from the Worker, and workspaces created with them cannot start again
-until they are restored.
+images, and workspaces created with them cannot start again until they are
+restored.
 
 ## Changing an image
 
-A workspace keeps its image name for life (changing it is a `config_conflict`).
+A workspace keeps its image for life: changing `HERMES_CF_IMAGE` for an
+existing workspace is refused.
 Updating the image behind a name affects only workspaces that boot from the
 image later; a workspace restored from a snapshot keeps the files it had. To
 move an existing workspace to a new image, delete it and create it again.
