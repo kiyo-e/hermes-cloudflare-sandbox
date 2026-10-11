@@ -42,3 +42,10 @@ test("commas before } or ] inside strings are kept", () => {
   assert.deepEqual(parseJsonc('{"vars": {"VALUE": "x,}", "L": "[a, ]"}, "k": [1, /* c */ ], }'),
                    { vars: { VALUE: "x,}", L: "[a, ]" }, k: [1] });
 });
+
+test("more than 100 images in total are refused", () => {
+  const many = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`img${i}`, { dockerfile: "Dockerfile" }]));
+  assert.throws(() => withImages(config, many, "/ops"), /too many images: 101/);
+  delete many.img99;
+  assert.equal(Object.keys(withImages(config, many, "/ops").containers[0].images).length, 100);
+});

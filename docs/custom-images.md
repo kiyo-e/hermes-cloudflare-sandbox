@@ -15,7 +15,7 @@ everything Hermes needs:
 | `linux/amd64` | Cloudflare Containers run only this platform. |
 | The base image's default command | The container stays up between Hermes commands. |
 | `/usr/local/bin/hermes-exec` and `python3` | Runs each terminal command, applies its timeout, and stops it on interrupt. |
-| Bash, GNU coreutils, `grep`, `sed`, `awk`, `find`, `tar` | Hermes' shell snapshot, file read/write/patch, and file sync. |
+| Bash, GNU coreutils at the standard paths (`/bin`, `/usr/bin`), `grep`, `sed`, `awk`, `find`, `tar` | Hermes' shell snapshot, file read/write/patch, file sync, and saving the workspace. |
 | `python3` | `execute_code`. |
 | `terminal.cwd` (default `/workspace`) that the image user can enter and write | Where commands run. |
 
@@ -66,6 +66,7 @@ list your images in a separate file:
 - `image` must be a digest-pinned reference in the Cloudflare registry
   (`wrangler containers push`). Other registries are not accepted.
 - `hermes` and `__proto__` cannot be used. Names match `[A-Za-z0-9_-]{1,128}`.
+- Up to 99 custom images (Cloudflare allows 100 including `hermes`).
 
 Then deploy from `worker/`:
 

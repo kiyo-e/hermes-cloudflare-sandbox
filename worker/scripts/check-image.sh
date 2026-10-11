@@ -29,6 +29,8 @@ docker exec "$name" /bin/bash -c 'test -x "$1"' bash "$runner" \
 # rg is optional: Hermes falls back to grep.
 docker exec "$name" /bin/bash -c 'for t in awk base64 cat chmod cut find grep head kill ls mkdir mktemp mv od python3 readlink realpath rm sed sha256sum stat tail tar timeout wc; do command -v "$t" >/dev/null || { echo "missing $t" >&2; exit 1; }; done' \
   || fail "missing a program Hermes runs in the sandbox"
+docker exec "$name" /bin/bash -c 'for t in /bin/true /bin/sync /usr/bin/stat /usr/bin/cat; do test -x "$t" || { echo "missing $t" >&2; exit 1; }; done' \
+  || fail "coreutils must be at the standard paths (/bin, /usr/bin)"
 
 docker exec "$name" /bin/mkdir -p -- "$cwd" || fail "cannot create $cwd"
 out=$(docker exec -w "$cwd" "$name" "$runner" --id "$(command_id)" 5 -c \
@@ -45,7 +47,7 @@ launched=$!
 sleep 2
 kill -0 "$launched" 2>/dev/null || fail "the test command ended before it could be stopped"
 docker exec "$name" "$runner" --kill "$id" || fail "stopping a command failed"
-for _ in $(seq 100); do kill -0 "$launched" 2>/dev/null || break; sleep 0.1; done
+for ((i = 0; i < 100; i++)); do kill -0 "$launched" 2>/dev/null || break; sleep 0.1; done
 if kill -0 "$launched" 2>/dev/null; then
   kill "$launched" 2>/dev/null || true
   fail "a running command could not be stopped (is /tmp writable?)"
