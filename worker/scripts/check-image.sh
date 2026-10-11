@@ -44,9 +44,13 @@ out=$(docker exec -w "$cwd" "$name" "$supervisor" --id "$(request_id)" 5 -c \
 
 # Cancellation by request id (the Worker's fallback when a command will not stop).
 id=$(request_id)
-docker exec -w "$cwd" "$name" "$supervisor" --id "$id" 60 -c 'sleep 60' >/dev/null 2>&1 &
+# Bash builtin wait on stdin, which stays open and empty (a host FIFO held
+# open by this script): no sleep binary required in the image.
+fifo=$(mktemp -u); mkfifo "$fifo"; exec 4<>"$fifo"; rm -f "$fifo"
+docker exec -i -w "$cwd" "$name" "$supervisor" --id "$id" 60 -c 'read -r -t 60 _' <&4 >/dev/null 2>&1 &
 launched=$!
 sleep 2
+kill -0 "$launched" 2>/dev/null || fail "the cancellation probe command ended before it could be cancelled"
 x "$supervisor" --kill "$id" || fail "$supervisor --kill failed"
 for _ in $(seq 100); do kill -0 "$launched" 2>/dev/null || break; sleep 0.1; done
 if kill -0 "$launched" 2>/dev/null; then
