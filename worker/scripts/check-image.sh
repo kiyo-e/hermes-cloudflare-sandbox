@@ -17,7 +17,7 @@ done
 x /bin/bash -c 'for t in base64 mktemp realpath find printf python3; do command -v "$t" >/dev/null || { echo "missing $t"; exit 1; }; done' \
   || fail "missing a tool used by file operations"
 [ "$(x /usr/local/bin/hermes-exec 5 -c 'printf ok')" = ok ] || fail "supervisor cannot run bash"
-x /bin/sh -c 'mkdir -p -- "$1" && test -w "$1"' sh "$cwd" || fail "$cwd is not writable by the image user"
+x /bin/bash -c '/bin/mkdir -p -- "$1" && test -w "$1"' bash "$cwd" || fail "$cwd is not writable by the image user"
 # The default command must keep the container up between commands.
 name=hermes-check-$$
 trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT INT TERM
