@@ -26,7 +26,11 @@ The easiest way to meet it is to start from the base image and add to it.
 ## Start from the base image
 
 The base image is published to GitHub Container Registry by
-`.github/workflows/base-image.yml` on each release tag and on `main`:
+`.github/workflows/base-image.yml` on each release tag and on `main`.
+GitHub creates a new package as private: after the first publish, set the
+`hermes-cloudflare-sandbox-base` package to public in its package settings, or
+run `docker login ghcr.io` before building. Forks publish under their own
+owner name.
 
 ```dockerfile
 # Pin by digest: a changed base replaces new workspaces' contents.

@@ -16,8 +16,16 @@ for tool in /bin/true /bin/mkdir /bin/sync /usr/bin/stat /usr/bin/cat; do
 done
 x /bin/bash -c 'for t in base64 mktemp realpath find printf python3; do command -v "$t" >/dev/null || { echo "missing $t"; exit 1; }; done' \
   || fail "missing a tool used by file operations"
-[ "$(x /usr/local/bin/hermes-exec 5 -c 'printf ok')" = ok ] || fail "supervisor cannot run bash"
-x /bin/bash -c '/bin/mkdir -p -- "$1" && test -w "$1"' bash "$cwd" || fail "$cwd is not writable by the image user"
+# Like the Worker: with a request id, so the supervisor must record it for --kill.
+id=0123456789abcdef0123456789abcdef
+x /bin/bash -c '
+  /usr/local/bin/hermes-exec --id "$1" 30 -c "sleep 30" & sup=$!
+  for _ in $(seq 50); do test -e "${HERMES_EXEC_STATE_DIR:-/tmp/hermes-exec}/$1" && break; sleep 0.1; done
+  test -e "${HERMES_EXEC_STATE_DIR:-/tmp/hermes-exec}/$1" || { echo "no state file"; exit 1; }
+  /usr/local/bin/hermes-exec --kill "$1" || exit 1
+  wait "$sup"; test "$(/usr/local/bin/hermes-exec 5 -c "printf ok")" = ok' bash "$id" \
+  || fail "supervisor cannot run, record or cancel a command (is /tmp writable?)"
+x /bin/bash -c '/bin/mkdir -p -- "$1" && cd -- "$1" && : > .hermes-check && /usr/bin/stat -c %s .hermes-check >/dev/null && rm -f .hermes-check' bash "$cwd" || fail "$cwd is not usable (enter, create, read) by the image user"
 # The default command must keep the container up between commands.
 name=hermes-check-$$
 trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT INT TERM
