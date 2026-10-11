@@ -1,37 +1,57 @@
-#!/bin/sh
+#!/bin/bash
 # Check that a locally built image meets the custom image contract
 # (docs/custom-images.md). Usage: worker/scripts/check-image.sh IMAGE [CWD]
 # CWD is the working directory the workspace will use (default /workspace).
-# The Worker execs programs directly, bypassing ENTRYPOINT, so this does too.
+#
+# Mirrors the Worker (worker/src/service.ts): the container runs the image's
+# own default command, and each probe is a separate exec with the argv the
+# Worker uses. Request ids are 32 lowercase hex digits, like the ones the
+# Hermes plugin (uuid4().hex) and cf-hermes send.
 set -eu
 image=${1:?usage: check-image.sh IMAGE [CWD]}
 cwd=${2:-/workspace}
 fail() { echo "FAIL: $*" >&2; exit 1; }
-x() { program=$1; shift; docker run --rm --platform linux/amd64 --entrypoint "$program" "$image" "$@"; }
+request_id() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
+supervisor=/usr/local/bin/hermes-exec
+
 arch=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image") || fail "image not found"
 [ "$arch" = linux/amd64 ] || fail "platform is $arch; Cloudflare Containers run linux/amd64"
-x /bin/bash -c 'test -x "$1"' bash /usr/local/bin/hermes-exec 2>/dev/null || fail "missing /bin/bash or /usr/local/bin/hermes-exec"
-for tool in /bin/true /bin/mkdir /bin/sync /usr/bin/stat /usr/bin/cat; do
-  x /bin/bash -c 'test -x "$1"' bash "$tool" || fail "missing $tool"
-done
-x /bin/bash -c 'for t in base64 mktemp realpath find printf python3; do command -v "$t" >/dev/null || { echo "missing $t"; exit 1; }; done' \
-  || fail "missing a tool used by file operations"
-# Like the Worker: with a request id, so the supervisor must record it for --kill.
-id=0123456789abcdef0123456789abcdef
-x /bin/bash -c '
-  /usr/local/bin/hermes-exec --id "$1" 30 -c "sleep 30" & sup=$!
-  for _ in $(seq 50); do test -e "${HERMES_EXEC_STATE_DIR:-/tmp/hermes-exec}/$1" && break; sleep 0.1; done
-  test -e "${HERMES_EXEC_STATE_DIR:-/tmp/hermes-exec}/$1" || { echo "no state file"; exit 1; }
-  /usr/local/bin/hermes-exec --kill "$1" || exit 1
-  wait "$sup"; test "$(/usr/local/bin/hermes-exec 5 -c "printf ok")" = ok' bash "$id" \
-  || fail "supervisor cannot run, record or cancel a command (is /tmp writable?)"
-x /bin/bash -c '/bin/mkdir -p -- "$1" && cd -- "$1" && : > .hermes-check && /usr/bin/stat -c %s .hermes-check >/dev/null && rm -f .hermes-check' bash "$cwd" || fail "$cwd is not usable (enter, create, read) by the image user"
+
 # The default command must keep the container up between commands.
 name=hermes-check-$$
 trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT INT TERM
-docker run -d --rm --platform linux/amd64 --name "$name" "$image" >/dev/null || fail "the image does not start"
+docker run -d --platform linux/amd64 --name "$name" "$image" >/dev/null || fail "the image does not start"
 sleep 3
-running=$(docker inspect --format '{{.State.Running}}' "$name" 2>/dev/null || echo false)
-docker rm -f "$name" >/dev/null 2>&1 || true
-[ "$running" = true ] || fail "the default command exits; use a long-running one such as sleep infinity"
+[ "$(docker inspect --format '{{.State.Running}}' "$name")" = true ] \
+  || fail "the default command exits; use a long-running one such as sleep infinity"
+x() { docker exec "$name" "$@"; }
+
+# Programs the Worker execs directly.
+x /bin/true || fail "missing /bin/true (readiness probe)"
+x /bin/mkdir -p -- "$cwd" || fail "cannot create $cwd"
+x /bin/sync || fail "missing /bin/sync (snapshot flush)"
+for tool in "$supervisor" /usr/bin/stat /usr/bin/cat; do
+  x /bin/bash -c 'test -x "$1"' bash "$tool" || fail "missing /bin/bash or $tool"
+done
+x /bin/bash -c 'for t in base64 mktemp realpath find printf python3; do command -v "$t" >/dev/null || { echo "missing $t"; exit 1; }; done' \
+  || fail "missing a tool used by file operations"
+
+# A command exactly as the Worker launches it: --id, timeout, -c, in cwd.
+out=$(docker exec -w "$cwd" "$name" "$supervisor" --id "$(request_id)" 5 -c \
+  'printf ok; : > .hermes-check && /usr/bin/stat -c %s .hermes-check && rm .hermes-check') \
+  || fail "a command cannot run in $cwd (enter, create, read) as the image user"
+[ "$out" = ok0 ] || fail "unexpected command output: $out"
+
+# Cancellation by request id (the Worker's fallback when a command will not stop).
+id=$(request_id)
+docker exec -w "$cwd" "$name" "$supervisor" --id "$id" 60 -c 'sleep 60' >/dev/null 2>&1 &
+launched=$!
+sleep 2
+x "$supervisor" --kill "$id" || fail "$supervisor --kill failed"
+for _ in $(seq 100); do kill -0 "$launched" 2>/dev/null || break; sleep 0.1; done
+if kill -0 "$launched" 2>/dev/null; then
+  kill "$launched" 2>/dev/null || true
+  fail "--kill did not stop the command (the supervisor must record request ids; is /tmp writable?)"
+fi
+
 echo "OK: $image meets the custom image contract"
