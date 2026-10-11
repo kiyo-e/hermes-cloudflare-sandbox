@@ -20,7 +20,8 @@ The Worker talks to the container only through `exec`. An image must provide:
 | A long-running default command (e.g. `sleep infinity`) | The container must stay up between commands. |
 
 The easiest way to meet it is to start from the base image and add to it.
-`worker/scripts/check-image.sh IMAGE` checks a locally built image.
+`worker/scripts/check-image.sh IMAGE [CWD]` checks a locally built image
+(`CWD` defaults to `/workspace`).
 
 ## Start from the base image
 
@@ -59,12 +60,12 @@ your images in a separate file:
   Wrangler. Relative paths are resolved from the JSON file's directory.
 - `image` must be a digest-pinned reference in the Cloudflare registry
   (`wrangler containers push`). Other registries are not accepted.
-- `hermes` cannot be replaced. Names match `[A-Za-z0-9_-]{1,128}`.
+- `hermes` and `__proto__` cannot be used. Names match `[A-Za-z0-9_-]{1,128}`.
 
 Then deploy from `worker/`:
 
 ```bash
-node scripts/with-images.mjs /path/to/images.json   # writes wrangler.generated.jsonc
+node scripts/with-images.mjs /path/to/images.json   # writes worker/wrangler.generated.jsonc
 npx wrangler deploy --config wrangler.generated.jsonc
 ```
 

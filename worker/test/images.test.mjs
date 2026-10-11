@@ -30,9 +30,15 @@ test("unsafe or ambiguous image entries are refused", () => {
     { a: { image: "docker.io/library/node:24" } },
     { a: { image: "registry.cloudflare.com/acct/repo:latest" } },
     { a: {} },
+    JSON.parse('{"__proto__": {"dockerfile": "x"}}'),
   ]) assert.throws(() => withImages(config, bad, "/ops"));
 });
 
 test("jsonc comments and trailing commas are handled without touching strings", () => {
   assert.deepEqual(parseJsonc('{ // c\n "a": "http://x/*y*/", /* z */ "b": [1,], }'), { a: "http://x/*y*/", b: [1] });
+});
+
+test("commas before } or ] inside strings are kept", () => {
+  assert.deepEqual(parseJsonc('{"vars": {"VALUE": "x,}", "L": "[a, ]"}, "k": [1, /* c */ ], }'),
+                   { vars: { VALUE: "x,}", L: "[a, ]" }, k: [1] });
 });
