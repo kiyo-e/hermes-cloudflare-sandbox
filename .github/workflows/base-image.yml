@@ -1,0 +1,38 @@
+name: Base image
+# Publishes the sandbox runtime image (worker/container) to GitHub Container
+# Registry so custom images can start FROM it:
+#   FROM ghcr.io/<owner>/hermes-cloudflare-sandbox-base:<tag>@sha256:<digest>
+# Tags: the git tag (v*) and `main`. Cloudflare cannot pull from GHCR directly;
+# a custom image is built FROM this one and pushed by `wrangler deploy`.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - worker/container/**
+      - .github/workflows/base-image.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build --platform linux/amd64 --tag base worker/container
+      - name: Check the custom image contract
+        run: worker/scripts/check-image.sh base
+      - name: Push
+        env:
+          REF: ${{ github.ref_name }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/hermes-cloudflare-sandbox-base
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          IMAGE=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+          docker tag base "$IMAGE:$REF"
+          docker push "$IMAGE:$REF"
+          docker tag base "$IMAGE:sha-${GITHUB_SHA::12}"
+          docker push "$IMAGE:sha-${GITHUB_SHA::12}"
+          echo "Pushed $(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$REF")" >> "$GITHUB_STEP_SUMMARY"

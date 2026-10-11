@@ -24,7 +24,7 @@ Hermes Agent
 
 - Runs Hermes' `terminal`, file tools and `execute_code` in the container.
 - Streams UTF-8 output, with stdin, exit codes, timeouts and cancellation.
-- Named images and per-workspace instance types.
+- Named images and per-workspace instance types. Add your own images without editing this repository: see [docs/custom-images.md](docs/custom-images.md).
 - Saves an idle workspace to a snapshot and restores it on the next command.
 
 Browser tools, skills, credentials and your home directory stay on the host and are not synced into the container.
@@ -115,7 +115,7 @@ If a container is lost before any snapshot exists, the Worker returns `workspace
 | --- | --- |
 | `terminal.container_persistent` | Keep the workspace in snapshots between sessions. |
 | `terminal.cwd` | Working directory inside the container. Default `/workspace`. |
-| `HERMES_CF_IMAGE` | An image name defined in `wrangler.jsonc`. |
+| `HERMES_CF_IMAGE` | A deployed image name: `hermes` or one of your [custom images](docs/custom-images.md). |
 | `HERMES_CF_INSTANCE` | `lite` or `standard-1` to `standard-4`, and also listed in `ALLOWED_INSTANCE_TYPES`. |
 | `HERMES_CF_ACCESS_CLIENT_ID`, `HERMES_CF_ACCESS_CLIENT_SECRET` | A Cloudflare Access service token, if the Worker is behind Access. |
 

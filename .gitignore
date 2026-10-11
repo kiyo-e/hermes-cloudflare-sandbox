@@ -17,3 +17,5 @@ worker/worker-configuration.d.ts
 !.env.sample
 *.log
 .DS_Store
+wrangler.generated.jsonc
+images.json

@@ -41,3 +41,4 @@ jobs:
         run: |
           docker run --rm hermes-cf-test sh -c 'test "$(id -u)" -ne 0 && test -w /workspace'
           docker run --rm hermes-cf-test /usr/local/bin/hermes-exec 5 -c 'python --version && node --version && printf "日本語\n"'
+          worker/scripts/check-image.sh hermes-cf-test
