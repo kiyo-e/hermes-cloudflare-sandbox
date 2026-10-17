@@ -103,11 +103,13 @@ With `container_persistent: true`, the namespace and Hermes' task ID select the 
 
 With `container_persistent: false`, the workspace is deleted when the session ends.
 
-When a session ends, or after about 10 minutes without commands (`IDLE_SECONDS` in `wrangler.jsonc`), the workspace is saved to a snapshot and the container stops. If saving fails, the container keeps running and the save is retried.
+When a session ends, or after about 10 minutes without commands (`IDLE_SECONDS` in `wrangler.jsonc`), the workspace is saved to a snapshot and the container stops. If saving fails, the container keeps running and the save is retried after 1, 2, 4 and 8 minutes, then every 15 minutes.
 
 **Snapshots are not backups.** They contain files only, so running processes (including background jobs) do not survive. Cloudflare deletes a snapshot 30 days after it is created or restored. Keep important work in git.
 
 If a container is lost before any snapshot exists, the Worker returns `workspace_lost` instead of starting an empty workspace. Use a new workspace name.
+
+If the container is still running but stops responding, commands fail with `workspace_unresponsive` after about a minute. Waiting does not fix it. Use a new workspace name; the files in the unresponsive workspace cannot be read.
 
 ## Configuration
 

@@ -15,6 +15,7 @@ export class MemoryStorage {
     if (key === "snapshot" && this.failSnapshotPut) throw new Error("storage unavailable");
     this.data.set(key, structuredClone(value));
   }
+  async delete(key) { return this.data.delete(key); }
   async setAlarm(value) { this.alarm = value; }
   async deleteAlarm() { this.alarm = null; }
   async deleteAll() { this.data.clear(); }

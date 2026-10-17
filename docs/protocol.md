@@ -92,7 +92,16 @@ exactly-once execution service. Inspect side effects before submitting a new ID
 after an uncertain response.
 
 One foreground command or lifecycle transition can be active per workspace.
-Conflicting operations return 409. Snapshotting does not freeze background
+Conflicting operations return 409 `workspace_busy`; the message says whether a
+command or a save/stop holds the workspace. `DELETE` is the exception: it is
+always accepted, ends a running command as `workspace_lost`, and a save that was
+in progress does not restore the deleted files.
+
+Before a command runs, the Worker checks that the container answers. A cold or
+restored start that does not become ready within 60 s is `startup_timeout`. A
+container that was already running and does not answer is `workspace_unresponsive`;
+waiting does not fix it, and only deleting the workspace does. The status response
+includes `save_failures`, the number of failed idle saves in a row. Snapshotting does not freeze background
 writers, and snapshots do not contain running processes. Stop application-level
 writers before manually checkpointing data that requires consistency.
 

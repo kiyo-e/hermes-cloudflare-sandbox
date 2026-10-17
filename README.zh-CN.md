@@ -101,11 +101,13 @@ python scripts/smoke.py --live
 
 当 `container_persistent: false` 时，会话结束时会删除工作区。
 
-会话结束时，或大约 10 分钟没有命令时（可通过 `wrangler.jsonc` 中的 `IDLE_SECONDS` 修改），工作区会保存为 snapshot，然后容器停止。如果保存失败，容器会继续运行，并重试保存。
+会话结束时，或大约 10 分钟没有命令时（可通过 `wrangler.jsonc` 中的 `IDLE_SECONDS` 修改），工作区会保存为 snapshot，然后容器停止。如果保存失败，容器会继续运行，并在 1、2、4、8 分钟后重试保存，之后每 15 分钟重试一次。
 
 **snapshot 不能替代备份。** 它只包含文件，因此正在运行的进程（包括后台进程）不会保留。Cloudflare 会在 snapshot 创建或恢复 30 天后删除它。重要的成果请保存到 git。
 
 如果容器在还没有任何 snapshot 时丢失，Worker 不会创建空的工作区，而是返回 `workspace_lost`。请使用新的工作区名称。
+
+如果容器仍在运行但不再响应，命令会在大约 1 分钟后以 `workspace_unresponsive` 失败。等待无法恢复。请使用新的工作区名称；无响应工作区中的文件无法读取。
 
 ## 配置
 

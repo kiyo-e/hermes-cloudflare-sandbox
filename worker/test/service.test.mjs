@@ -315,3 +315,105 @@ test("an idle workspace is not probed", async t => {
   await flush();
   assert.equal(container.commands.filter(c => c.command[0] === "/bin/true").length, probes);
 });
+
+// A wedged workspace: saves kept failing, every
+// attempt held the lifecycle lock, and an explicit reset was refused with 409.
+test("reset is accepted while an idle save is still in progress", async () => {
+  const { service, container, storage } = await setup();
+  await execute(service);
+  let finishSnapshot;
+  container.snapshotContainer = () => new Promise(resolve => { finishSnapshot = resolve; });
+  await storage.put("lastActivity", Date.now() - 700_000);
+  const saving = service.alarm().catch(() => {});
+  await flush();
+  assert.equal(typeof finishSnapshot, "function", "the save is in flight");
+  const reset = await service.fetch(request("reset", { confirm: true }, "DELETE"));
+  assert.equal(reset.status, 200);
+  assert.equal(container.running, false);
+  finishSnapshot({ id: "late-snapshot" });
+  await saving;
+  assert.equal(await storage.get("snapshot"), undefined, "a late save must not resurrect the discarded files");
+  assert.equal(await storage.get("config"), undefined);
+});
+
+test("reset is accepted while a command hangs, and the command ends as lost", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const { service, container, storage } = await setup();
+  container.processes.push(pendingProcess());
+  const response = await service.fetch(request("exec", execution({ timeout: 900 })));
+  const reader = response.body.getReader();
+  await reader.read(); // started
+  const reset = await service.fetch(request("reset", { confirm: true }, "DELETE"));
+  assert.equal(reset.status, 200);
+  t.mock.timers.tick(LOST_POLL_MS);
+  const events = await drain(reader);
+  assert.equal(events.at(-1).code, "workspace_lost");
+  assert.equal(await storage.get("config"), undefined);
+  // A fresh workspace with the same id starts from the image, not a snapshot.
+  assert.equal((await service.fetch(request("init", { persistent: true, cwd: "/workspace", image: "hermes" }))).status, 200);
+  t.mock.timers.reset();
+  const next = await execute(service);
+  assert.equal(next.at(-1).type, "exit");
+  assert.equal(container.starts.at(-1).image, "sha256:example-image");
+});
+
+test("repeated save failures back off instead of holding the workspace every minute", async () => {
+  const { service, container, storage } = await setup();
+  await execute(service);
+  container.failSnapshot = true;
+  const waits = [];
+  for (let i = 0; i < 6; i++) {
+    await storage.put("lastActivity", Date.now() - 700_000);
+    const before = Date.now();
+    await service.alarm(); // resolves: the retry is scheduled here, not by a thrown alarm
+    waits.push(storage.alarm - before);
+  }
+  for (let i = 1; i < waits.length; i++) assert.ok(waits[i] >= waits[i - 1], `waits grow: ${waits}`);
+  assert.ok(waits[0] <= 61_000 && waits.at(-1) >= 15 * 60_000 - 1_000 && waits.at(-1) <= 15 * 60_000 + 1_000, `waits: ${waits}`);
+  assert.equal(container.running, true, "files are kept while saving fails");
+  const status = await (await service.fetch(request("status", {}, "GET"))).json();
+  assert.equal(status.save_failures, 6);
+  container.failSnapshot = false;
+  await storage.put("lastActivity", Date.now() - 700_000);
+  await service.alarm();
+  assert.equal(container.running, false);
+  assert.equal(await storage.get("saveFailures"), undefined);
+});
+
+test("a running container that stops answering is reported as unresponsive, not as a slow start", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  const { service, container } = await setup();
+  await execute(service);
+  assert.equal(container.running, true);
+  const original = container.exec.bind(container);
+  container.exec = async (command, options) =>
+    command[0] === "/bin/true" ? new Promise(() => {}) : original(command, options);
+  const result = collect(await service.fetch(request("exec", execution())));
+  for (let i = 0; i < 70; i++) { t.mock.timers.tick(1000); await flush(); }
+  const events = await result;
+  assert.equal(events.at(-1).code, "workspace_unresponsive");
+  assert.equal(container.commands.some(c => c.command[0] === "/usr/local/bin/hermes-exec"), true, "only the first command ran");
+});
+
+test("a cold start that never becomes ready is still a startup timeout", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  const { service, container } = await setup();
+  container.failProbe = Infinity;
+  const result = collect(await service.fetch(request("exec", execution())));
+  for (let i = 0; i < 70; i++) { t.mock.timers.tick(1000); await flush(); }
+  assert.equal((await result).at(-1).code, "startup_timeout");
+});
+
+test("a busy answer says whether a save or a command holds the workspace", async () => {
+  const { service, container, storage } = await setup();
+  await execute(service);
+  container.snapshotContainer = () => new Promise(() => {});
+  await storage.put("lastActivity", Date.now() - 700_000);
+  void service.alarm().catch(() => {});
+  await flush();
+  const response = await service.fetch(request("exec", execution()));
+  assert.equal(response.status, 409);
+  const { error } = await response.json();
+  assert.equal(error.code, "workspace_busy");
+  assert.match(error.message, /sav/i);
+});

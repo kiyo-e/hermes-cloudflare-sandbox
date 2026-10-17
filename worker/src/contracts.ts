@@ -31,6 +31,7 @@ export interface ContainerPort<Snapshot = unknown, Image = string> {
 export interface StoragePort {
   get<T>(key: string): Promise<T | undefined>;
   put<T>(key: string, value: T): Promise<void>;
+  delete(key: string): Promise<boolean>;
   deleteAll(): Promise<void>;
   setAlarm(timestamp: number): Promise<void>;
   deleteAlarm(): Promise<void>;
