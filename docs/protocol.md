@@ -93,7 +93,8 @@ after an uncertain response.
 
 One foreground command or lifecycle transition can be active per workspace.
 Conflicting operations return 409 (`workspace_busy`). While a save is running
-(`release`, including the idle alarm) the code is `workspace_saving`, and the
+(`release`, including the idle alarm) the code is `workspace_saving` (except for
+`DELETE`, below), and the
 error also carries `release_failures` (consecutive failed saves) and `reference`
 (the last Cloudflare error reference, for support). `init` is not refused during
 an idle save: it records activity and answers `{"ok":true,"saving":true}`, so the
@@ -104,7 +105,16 @@ alarm retries every minute and, after `RELEASE_MAX_FAILURES` consecutive failure
 stop past the next try (only if that succeeds; else it stays at one minute, and a
 re-created object restores the longer timeout). The alarm swallows the failure
 only when its retry alarm was set. `GET` status adds `saving`, `release_failures` and
-`release_reference`. Failures are logged with the reference. Snapshotting does not freeze background
+`release_reference`. Failures are logged with the reference.
+
+`DELETE` is always accepted, even during a save or a command: it is the way out
+of a wedged workspace. A running command ends as `workspace_lost`, and a save in
+flight does not bring the deleted files back.
+
+Before a command runs, the Worker checks that the container answers. A cold or
+restored start that does not become ready within 60 s is `startup_timeout`. A
+container that was already running and does not answer is `workspace_unresponsive`;
+waiting does not fix it, and only deleting the workspace does. Snapshotting does not freeze background
 writers, and snapshots do not contain running processes. Stop application-level
 writers before manually checkpointing data that requires consistency.
 

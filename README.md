@@ -109,6 +109,8 @@ When a session ends, or after about 10 minutes without commands (`IDLE_SECONDS` 
 
 If a container is lost before any snapshot exists, the Worker returns `workspace_lost` instead of starting an empty workspace. Use a new workspace name.
 
+If the container is still running but stops responding, commands fail with `workspace_unresponsive` after about a minute. Waiting does not fix it. Use a new workspace name; the files in the unresponsive workspace cannot be read.
+
 ## Configuration
 
 | Setting | Meaning |

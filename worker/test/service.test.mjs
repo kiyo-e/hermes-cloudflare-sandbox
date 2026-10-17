@@ -337,7 +337,34 @@ test("init during a failing idle save records activity instead of 409, and keeps
   assert.equal(container.log.filter(x => x === "snapshot").length, 1);
 });
 
-test("reset while a save is in flight says so (workspace_saving) with the failure count and reference", async () => {
+test("reset is accepted while a save is in flight, and the late save does not bring the files back", async () => {
+  const { service, container, storage } = await setup();
+  await execute(service);
+  await idle(storage);
+  container.failSnapshot = true;
+  container.snapshotError = "internal error; reference = 9lhele873oj7v9v9g7ckui53";
+  await service.alarm().catch(() => {});
+  container.failSnapshot = false;
+  let open; container.snapshotGate = new Promise(r => { open = r; });
+  await idle(storage);
+  const alarm = service.alarm().catch(() => {});
+  await new Promise(r => setTimeout(r, 5));
+  // A reset is the way out of a wedged workspace: it must not wait for the save.
+  const res = await service.fetch(request("reset", { confirm: true }, "DELETE"));
+  assert.equal(res.status, 200);
+  assert.equal(container.running, false);
+  open(); await alarm;
+  assert.equal(await storage.get("snapshot"), undefined, "a late save must not resurrect the discarded files");
+  assert.equal(await storage.get("config"), undefined);
+  assert.equal(await storage.get("releaseFailures"), undefined);
+  assert.equal(storage.alarm, null);
+  // The same id starts fresh from the image.
+  assert.equal((await service.fetch(request("init", { persistent: true, cwd: "/workspace", image: "hermes" }))).status, 200);
+  assert.equal((await execute(service)).at(-1).type, "exit");
+  assert.equal(container.starts.at(-1).image, "sha256:example-image");
+});
+
+test("a busy answer during a failing save still carries the failure count and reference", async () => {
   const { service, container, storage } = await setup();
   await execute(service);
   await idle(storage);
@@ -345,9 +372,10 @@ test("reset while a save is in flight says so (workspace_saving) with the failur
   container.snapshotError = "internal error; reference = 9lhele873oj7v9v9g7ckui53";
   await service.alarm().catch(() => {});
   let open; container.snapshotGate = new Promise(r => { open = r; });
+  await idle(storage);
   const alarm = service.alarm().catch(() => {});
   await new Promise(r => setTimeout(r, 5));
-  const res = await service.fetch(request("reset", { confirm: true }));
+  const res = await service.fetch(request("checkpoint"));
   assert.equal(res.status, 409);
   const body = await res.json();
   assert.equal(body.error.code, "workspace_saving");
@@ -440,4 +468,48 @@ test("once the save decided to stop compute, a new command is refused with works
   assert.equal(res.status, 409);
   assert.equal((await res.json()).error.code, "workspace_saving");
   open(); await alarm;
+});
+
+// --- a wedged container: reset always gets through, and the error says so ---
+test("reset is accepted while a command hangs, and the command ends as lost", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const { service, container, storage } = await setup();
+  container.processes.push(pendingProcess());
+  const response = await service.fetch(request("exec", execution({ timeout: 900 })));
+  const reader = response.body.getReader();
+  await reader.read(); // started
+  const reset = await service.fetch(request("reset", { confirm: true }, "DELETE"));
+  assert.equal(reset.status, 200);
+  t.mock.timers.tick(LOST_POLL_MS);
+  const events = await drain(reader);
+  assert.equal(events.at(-1).code, "workspace_lost");
+  assert.equal(await storage.get("config"), undefined);
+  assert.equal((await service.fetch(request("init", { persistent: true, cwd: "/workspace", image: "hermes" }))).status, 200);
+  t.mock.timers.reset();
+  assert.equal((await execute(service)).at(-1).type, "exit");
+  assert.equal(container.starts.at(-1).image, "sha256:example-image");
+});
+
+test("a running container that stops answering is reported as unresponsive, not as a slow start", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  const { service, container } = await setup();
+  await execute(service);
+  assert.equal(container.running, true);
+  const original = container.exec.bind(container);
+  container.exec = async (command, options) =>
+    command[0] === "/bin/true" ? new Promise(() => {}) : original(command, options);
+  const result = collect(await service.fetch(request("exec", execution())));
+  for (let i = 0; i < 70; i++) { t.mock.timers.tick(1000); await flush(); }
+  const events = await result;
+  assert.equal(events.at(-1).code, "workspace_unresponsive");
+  assert.equal(container.commands.filter(c => c.command[0] === "/usr/local/bin/hermes-exec").length, 1, "only the first command ran");
+});
+
+test("a cold start that never becomes ready is still a startup timeout", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  const { service, container } = await setup();
+  container.failProbe = Infinity;
+  const result = collect(await service.fetch(request("exec", execution())));
+  for (let i = 0; i < 70; i++) { t.mock.timers.tick(1000); await flush(); }
+  assert.equal((await result).at(-1).code, "startup_timeout");
 });
