@@ -513,3 +513,28 @@ test("a cold start that never becomes ready is still a startup timeout", async t
   for (let i = 0; i < 70; i++) { t.mock.timers.tick(1000); await flush(); }
   assert.equal((await result).at(-1).code, "startup_timeout");
 });
+
+test("a save whose sync outlives a reset does not touch the next workspace with the same id", async () => {
+  const { service, container, storage } = await setup();
+  await execute(service);
+  await idle(storage);
+  const original = container.exec.bind(container);
+  let finishSync;
+  container.exec = async (command, options) => {
+    if (command[0] === "/bin/sync" && !finishSync) {
+      return { ...completedProcess(), exitCode: new Promise(r => { finishSync = () => r(0); }) };
+    }
+    return original(command, options);
+  };
+  const alarm = service.alarm().catch(() => {});
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(typeof finishSync, "function", "the save waits on sync");
+  assert.equal((await service.fetch(request("reset", { confirm: true }, "DELETE"))).status, 200);
+  assert.equal((await service.fetch(request("init", { persistent: true, cwd: "/workspace", image: "hermes" }))).status, 200);
+  assert.equal((await execute(service)).at(-1).type, "exit");
+  const snapshots = container.log.filter(x => x === "snapshot").length;
+  finishSync(); await alarm;
+  assert.equal(container.running, true, "the fresh container is not stopped by the old save");
+  assert.equal(container.log.filter(x => x === "snapshot").length, snapshots, "the old save takes no snapshot");
+  assert.equal(await storage.get("snapshot"), undefined);
+});

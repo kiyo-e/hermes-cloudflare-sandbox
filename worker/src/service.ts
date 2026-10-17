@@ -311,7 +311,12 @@ export class SandboxService<S = unknown, I = string> {
     if (await withinStartup(mkdir.exitCode) !== 0) throw new ApiError(400, "invalid_cwd", "Working directory is not writable");
   }
 
-  private async save(): Promise<void> {
+  /** Save a snapshot. `generation` is the workspace the caller started with: a
+   * reset in between (even during sync) makes the save give up, so it never
+   * snapshots or stops a fresh workspace that reuses the same id.
+   */
+  private async save(generation = this.generation): Promise<void> {
+    const deleted = () => new ApiError(409, "workspace_missing", "Workspace was deleted while saving");
     if (!this.container.running) {
       if (!await this.storage.get("snapshot") && await this.storage.get("booted")) {
         throw new ApiError(409, "workspace_lost", "Container stopped without a checkpoint");
@@ -320,10 +325,10 @@ export class SandboxService<S = unknown, I = string> {
     }
     const sync = await this.container.exec(["/bin/sync"], { stdout: "ignore", stderr: "ignore" });
     if (await sync.exitCode !== 0) throw new ApiError(503, "snapshot_failed", "Filesystem sync failed");
-    const generation = this.generation;
+    if (generation !== this.generation) throw deleted();
     const handle = await this.container.snapshotContainer({ name: `hermes-${Date.now()}` });
     // The workspace was deleted while saving: do not bring its files back.
-    if (generation !== this.generation) throw new ApiError(409, "workspace_missing", "Workspace was deleted while saving");
+    if (generation !== this.generation) throw deleted();
     // Critical ordering: persist the opaque handle before stopping compute.
     await this.storage.put<SnapshotRecord<S>>("snapshot", { handle, savedAt: Date.now() });
   }
@@ -347,7 +352,7 @@ export class SandboxService<S = unknown, I = string> {
     if (!config) return;
     try {
       if (config.persistent) {
-        await this.save();
+        await this.save(generation);
         await this.storage.delete("releaseFailures");
         if (this.active || this.usedDuringRelease) {
           // Someone came in (init/exec/read) while saving: keep compute; the
