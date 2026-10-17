@@ -11,7 +11,8 @@ export const SANDBOX_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const encoder = new TextEncoder();
 
 export class ApiError extends Error {
-  constructor(public status: number, public code: string, message: string) {
+  constructor(public status: number, public code: string, message: string,
+              public details: Record<string, unknown> = {}) {
     super(message);
   }
 }
@@ -22,7 +23,7 @@ export function json(data: unknown, status = 200): Response {
 
 export function errorResponse(error: unknown): Response {
   if (error instanceof ApiError) {
-    return json({ error: { code: error.code, message: error.message } }, error.status);
+    return json({ error: { ...error.details, code: error.code, message: error.message } }, error.status);
   }
   // Never expose provider exception objects, request bodies, or credentials.
   return json({ error: { code: "internal_error", message: "Sandbox operation failed" } }, 503);

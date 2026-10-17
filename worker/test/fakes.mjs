@@ -17,6 +17,7 @@ export class MemoryStorage {
   }
   async setAlarm(value) { this.alarm = value; }
   async deleteAlarm() { this.alarm = null; }
+  async delete(key) { return this.data.delete(key); }
   async deleteAll() { this.data.clear(); }
 }
 
@@ -108,7 +109,8 @@ export class FakeContainer {
   async snapshotContainer(options) {
     this.log.push("snapshot");
     this.onSnapshot?.();
-    if (this.failSnapshot) throw new Error("snapshot failed");
+    if (this.snapshotGate) await this.snapshotGate;
+    if (this.failSnapshot) throw new Error(this.snapshotError ?? "snapshot failed");
     return { id: "opaque-snapshot", name: options.name };
   }
   async destroy(reason) { this.log.push("destroy"); this.reason = reason; this.running = false; }

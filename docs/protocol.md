@@ -92,7 +92,16 @@ exactly-once execution service. Inspect side effects before submitting a new ID
 after an uncertain response.
 
 One foreground command or lifecycle transition can be active per workspace.
-Conflicting operations return 409. Snapshotting does not freeze background
+Conflicting operations return 409 (`workspace_busy`). While a save is running
+(`release`, including the idle alarm) the code is `workspace_saving`, and the
+error also carries `release_failures` (consecutive failed saves) and `reference`
+(the last Cloudflare error reference, for support). `init` is not refused during
+an idle save: it records activity and answers `{"ok":true,"saving":true}`, so the
+alarm stops trying to stop compute. A failed save never destroys compute; the
+alarm retries every minute and, after `RELEASE_MAX_FAILURES` consecutive failures
+(`worker/src/service.ts`), once per idle period, pushing the native inactivity
+stop past the next try. `GET` status adds `saving`, `release_failures` and
+`release_reference`. Failures are logged with the reference. Snapshotting does not freeze background
 writers, and snapshots do not contain running processes. Stop application-level
 writers before manually checkpointing data that requires consistency.
 

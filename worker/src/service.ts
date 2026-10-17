@@ -54,11 +54,26 @@ interface SnapshotRecord<S> { handle: S; savedAt: number }
 /** One durable workspace, with at most one foreground command at a time.
  * The container itself contains no gateway token or Cloudflare account key.
  */
+/** Consecutive failed idle saves before the alarm stops retrying every minute. */
+export const RELEASE_MAX_FAILURES = 5;
+const RELEASE_RETRY_MS = 60_000;
+
+interface ReleaseFailures { count: number; firstAt: number; lastAt: number; error: string; reference: string | null }
+
+/** Cloudflare's opaque id in "internal error; reference = …", for support tickets. */
+export function cloudflareReference(message: string): string | null {
+  return /reference\s*=\s*([A-Za-z0-9]+)/.exec(message)?.[1] ?? null;
+}
+
 export class SandboxService<S = unknown, I = string> {
   readonly inactivityMs: number;
   readonly idleMs: number;
   private active: ActiveCommand | null = null;
   private lifecycleBusy = false;
+  /** True while release() (save then stop) is running. */
+  private releasing = false;
+  /** Copy of storage "releaseFailures", read when a release starts. */
+  private releaseFailures: ReleaseFailures | undefined;
 
   constructor(private container: ContainerPort<S, I>, private storage: StoragePort,
               private settings: Settings) {
@@ -94,7 +109,17 @@ export class SandboxService<S = unknown, I = string> {
     return value;
   }
 
+  /** Synchronous on purpose: callers claim the workspace right after it. */
   private assertIdle(): void {
+    if (this.releasing) {
+      // Say why, so the caller can show "saving" rather than a bare 409.
+      const failures = this.releaseFailures;
+      throw new ApiError(409, "workspace_saving", failures
+        ? `Workspace is being saved; the last ${failures.count} save(s) failed`
+        : "Workspace is being saved", {
+        release_failures: failures?.count ?? 0, reference: failures?.reference ?? null,
+      });
+    }
     if (this.active || this.lifecycleBusy) throw new ApiError(409, "workspace_busy", "Workspace is busy");
   }
 
@@ -111,12 +136,28 @@ export class SandboxService<S = unknown, I = string> {
       if (action === "status") {
         const config = await this.config();
         const snapshot = await this.storage.get<SnapshotRecord<S>>("snapshot");
+        const failures = await this.storage.get<ReleaseFailures>("releaseFailures");
         return json({ config, running: this.container.running, busy: !!this.active || this.lifecycleBusy,
-                      snapshot_saved_at: snapshot?.savedAt ?? null });
+                      snapshot_saved_at: snapshot?.savedAt ?? null, saving: this.releasing,
+                      release_failures: failures?.count ?? 0, release_reference: failures?.reference ?? null });
       }
       const body = await readJson(request);
       if (action === "init") {
         const config = workspaceConfig(body, this.settings);
+        if (this.releasing) {
+          // An idle save is in flight (and may hang or keep failing). Do not
+          // lock the caller out: record activity so the alarm stops trying to
+          // stop compute, and let the save finish on its own. Compute is kept
+          // if it fails; if it succeeds the next command boots from the
+          // snapshot. Either way no data is lost (cf-hermes #329).
+          const existing = await this.storage.get<WorkspaceConfig>("config");
+          if (!existing) throw new ApiError(409, "workspace_saving", "Workspace is being saved");
+          if (JSON.stringify(existing) !== JSON.stringify(config)) {
+            throw new ApiError(409, "config_conflict", "Existing workspace has different settings; use a new identity");
+          }
+          await this.touch();
+          return json({ ok: true, running: this.container.running, saving: true });
+        }
         return await this.exclusive(async () => {
           if (!Object.prototype.hasOwnProperty.call(this.container.images, config.image)) {
             throw new ApiError(400, "image_not_found", "Named image was not deployed");
@@ -227,6 +268,13 @@ export class SandboxService<S = unknown, I = string> {
   }
 
   private async release(): Promise<void> {
+    this.releasing = true;
+    this.releaseFailures = await this.storage.get<ReleaseFailures>("releaseFailures");
+    try { await this.releaseOnce(); }
+    finally { this.releasing = false; }
+  }
+
+  private async releaseOnce(): Promise<void> {
     const config = await this.storage.get<WorkspaceConfig>("config");
     if (!config) return;
     try {
@@ -234,6 +282,7 @@ export class SandboxService<S = unknown, I = string> {
         await this.save();
         await this.container.destroy("Workspace checkpointed");
         await this.storage.deleteAlarm();
+        await this.storage.delete("releaseFailures");
       } else {
         await this.container.destroy("Ephemeral workspace released");
         await this.storage.deleteAlarm();
@@ -248,15 +297,33 @@ export class SandboxService<S = unknown, I = string> {
         throw error;
       }
       // A failed snapshot must NOT fall through to destroy(). Keep data, retry the alarm.
-      console.error("workspace release failed; keeping compute and retrying", error instanceof Error ? error.message : String(error));
-      await this.storage.setAlarm(Date.now() + 60_000);
+      const message = error instanceof Error ? error.message : String(error);
+      const prev = await this.storage.get<ReleaseFailures>("releaseFailures");
+      const now = Date.now();
+      const failures: ReleaseFailures = {
+        count: (prev?.count ?? 0) + 1, firstAt: prev?.firstAt ?? now, lastAt: now,
+        error: message.slice(0, 500), reference: cloudflareReference(message) ?? prev?.reference ?? null,
+      };
+      await this.storage.put("releaseFailures", failures);
+      this.releaseFailures = failures;
+      // After RELEASE_MAX_FAILURES, stop retrying every minute: try again one
+      // idle period later. Compute is never destroyed unsaved; push the native
+      // inactivity stop past the next try so it cannot stop it either.
+      const givingUp = failures.count >= RELEASE_MAX_FAILURES;
+      const retryMs = givingUp ? this.idleMs : RELEASE_RETRY_MS;
+      console.error(givingUp ? "workspace release keeps failing; keeping compute, backing off"
+                             : "workspace release failed; keeping compute and retrying",
+                    JSON.stringify({ failures: failures.count, since: new Date(failures.firstAt).toISOString(),
+                                     reference: cloudflareReference(message), error: failures.error }));
+      if (givingUp) await this.container.setInactivityTimeout(retryMs + this.inactivityMs).catch(() => {});
+      await this.storage.setAlarm(now + retryMs);
       throw error;
     }
   }
 
   async alarm(): Promise<void> {
     if (this.active || this.lifecycleBusy) {
-      await this.storage.setAlarm(Date.now() + 60_000);
+      await this.storage.setAlarm(Date.now() + RELEASE_RETRY_MS);
       return;
     }
     if (!await this.storage.get("config")) return;
@@ -269,6 +336,9 @@ export class SandboxService<S = unknown, I = string> {
     try {
       await this.exclusive(() => this.release());
     } catch (error) {
+      // We schedule the retry ourselves (backing off after repeated failures);
+      // a thrown alarm would add the platform's own fast retries on top.
+      if (this.container.running && await this.storage.get("releaseFailures")) return;
       // A thrown alarm is retried by the platform; with no container there is nothing to retry.
       if (!this.container.running) return;
       throw error;

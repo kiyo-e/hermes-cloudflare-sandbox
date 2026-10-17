@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { SandboxService, LOST_POLL_MS, LIVENESS_INTERVAL_MS, LIVENESS_TIMEOUT_MS } from "../dist-test/service.js";
+import { SandboxService, RELEASE_MAX_FAILURES, LOST_POLL_MS, LIVENESS_INTERVAL_MS, LIVENESS_TIMEOUT_MS } from "../dist-test/service.js";
 import { MAX_OUTPUT_CHARS } from "../dist-test/protocol.js";
 import { MemoryStorage, FakeContainer, SETTINGS, request, execution, collect, completedProcess, pendingProcess } from "./fakes.mjs";
 
@@ -314,4 +314,61 @@ test("an idle workspace is not probed", async t => {
   t.mock.timers.tick(LIVENESS_INTERVAL_MS * 5);
   await flush();
   assert.equal(container.commands.filter(c => c.command[0] === "/bin/true").length, probes);
+});
+
+// --- a release that keeps failing must not lock the workspace (cf-hermes #329) ---
+async function idle(storage) { await storage.put("lastActivity", Date.now() - 3_600_000); }
+
+test("init during a failing idle save records activity instead of 409, and keeps compute", async () => {
+  const { service, container, storage } = await setup();
+  await execute(service);
+  await idle(storage);
+  container.failSnapshot = true;
+  let open; container.snapshotGate = new Promise(r => { open = r; });
+  const alarm = service.alarm().catch(() => {});
+  await new Promise(r => setTimeout(r, 5));
+  const init = await service.fetch(request("init", { persistent: true, cwd: "/workspace", image: "hermes" }));
+  assert.equal(init.status, 200);
+  assert.equal((await init.json()).saving, true);
+  open(); await alarm;
+  assert.equal(container.running, true);
+  container.snapshotGate = null;
+  await service.alarm(); // activity is recent: no new save attempt
+  assert.equal(container.log.filter(x => x === "snapshot").length, 1);
+});
+
+test("reset while a save is in flight says so (workspace_saving) with the failure count and reference", async () => {
+  const { service, container, storage } = await setup();
+  await execute(service);
+  await idle(storage);
+  container.failSnapshot = true;
+  container.snapshotError = "internal error; reference = 9lhele873oj7v9v9g7ckui53";
+  await service.alarm().catch(() => {});
+  let open; container.snapshotGate = new Promise(r => { open = r; });
+  const alarm = service.alarm().catch(() => {});
+  await new Promise(r => setTimeout(r, 5));
+  const res = await service.fetch(request("reset", { confirm: true }));
+  assert.equal(res.status, 409);
+  const body = await res.json();
+  assert.equal(body.error.code, "workspace_saving");
+  assert.equal(body.error.release_failures, 1);
+  assert.equal(body.error.reference, "9lhele873oj7v9v9g7ckui53");
+  open(); await alarm;
+  const status = await (await service.fetch(request("status", {}, "GET"))).json();
+  assert.equal(status.release_failures, 2);
+});
+
+test("after RELEASE_MAX_FAILURES the alarm backs off to the idle period and keeps compute alive", async () => {
+  const { service, container, storage } = await setup();
+  await execute(service);
+  container.failSnapshot = true;
+  for (let i = 0; i < RELEASE_MAX_FAILURES; i++) { await idle(storage); await service.alarm().catch(() => {}); }
+  assert.equal(container.running, true);
+  assert.equal(container.log.includes("destroy"), false);
+  assert.ok(storage.alarm - Date.now() > 60_000 * 2, "no more 60 s retries");
+  assert.ok(container.inactivity > service.idleMs, "native stop pushed past the next try");
+  container.failSnapshot = false;
+  await idle(storage); await service.alarm();
+  assert.equal(container.running, false);
+  assert.equal(await storage.get("releaseFailures"), undefined);
 });
