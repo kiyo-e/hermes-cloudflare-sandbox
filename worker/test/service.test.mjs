@@ -372,3 +372,59 @@ test("after RELEASE_MAX_FAILURES the alarm backs off to the idle period and keep
   assert.equal(container.running, false);
   assert.equal(await storage.get("releaseFailures"), undefined);
 });
+
+// --- review 1 of the #329 fix ---
+test("after init during a hanging save, exec runs, and the finished save does not stop compute", async () => {
+  const { service, container, storage } = await setup();
+  await execute(service);
+  await idle(storage);
+  let open; container.snapshotGate = new Promise(r => { open = r; });
+  const alarm = service.alarm().catch(() => {});
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal((await service.fetch(request("init", { persistent: true, cwd: "/workspace", image: "hermes" }))).status, 200);
+  const events = await execute(service);
+  assert.equal(events.at(-1).type, "exit");
+  open(); await alarm;
+  assert.equal(container.running, true, "activity came in during the save: compute stays");
+  assert.ok(await storage.get("snapshot"), "the snapshot is still kept");
+});
+
+test("a failed save whose retry alarm cannot be set rethrows (platform retry keeps compute safe)", async () => {
+  const { service, container, storage } = await setup();
+  await execute(service);
+  await idle(storage);
+  container.failSnapshot = true;
+  storage.failSetAlarm = true;
+  await assert.rejects(service.alarm());
+  assert.equal(container.running, true);
+});
+
+test("releasing is cleared even when reading the failure record throws", async () => {
+  const { service, container, storage } = await setup();
+  await execute(service);
+  storage.failGet = "releaseFailures";
+  assert.equal((await service.fetch(request("release"))).status, 503);
+  storage.failGet = null;
+  const events = await execute(service);
+  assert.equal(events.at(-1).type, "exit");
+});
+
+test("if the long inactivity timeout cannot be set, retries stay at one minute", async () => {
+  const { service, container, storage } = await setup();
+  await execute(service);
+  container.failSnapshot = true;
+  container.failInactivity = true;
+  for (let i = 0; i < RELEASE_MAX_FAILURES; i++) { await idle(storage); await service.alarm().catch(() => {}); }
+  assert.ok(storage.alarm - Date.now() <= 60_000);
+});
+
+test("a re-created object restores the long inactivity timeout after repeated failures", async () => {
+  const { service, container, storage } = await setup();
+  await execute(service);
+  container.failSnapshot = true;
+  for (let i = 0; i < RELEASE_MAX_FAILURES; i++) { await idle(storage); await service.alarm().catch(() => {}); }
+  const recreated = new SandboxService(container, storage, SETTINGS);
+  container.inactivity = 0;
+  await recreated.restoreInactivityTimeout();
+  assert.ok(container.inactivity > recreated.inactivityMs);
+});

@@ -97,10 +97,13 @@ Conflicting operations return 409 (`workspace_busy`). While a save is running
 error also carries `release_failures` (consecutive failed saves) and `reference`
 (the last Cloudflare error reference, for support). `init` is not refused during
 an idle save: it records activity and answers `{"ok":true,"saving":true}`, so the
-alarm stops trying to stop compute. A failed save never destroys compute; the
+alarm stops trying to stop compute; `exec` and file reads also run during a
+save, and a save that sees activity keeps compute (the snapshot is kept). A failed save never destroys compute; the
 alarm retries every minute and, after `RELEASE_MAX_FAILURES` consecutive failures
 (`worker/src/service.ts`), once per idle period, pushing the native inactivity
-stop past the next try. `GET` status adds `saving`, `release_failures` and
+stop past the next try (only if that succeeds; else it stays at one minute, and a
+re-created object restores the longer timeout). The alarm swallows the failure
+only when its retry alarm was set. `GET` status adds `saving`, `release_failures` and
 `release_reference`. Failures are logged with the reference. Snapshotting does not freeze background
 writers, and snapshots do not contain running processes. Stop application-level
 writers before manually checkpointing data that requires consistency.

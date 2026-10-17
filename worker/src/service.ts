@@ -74,6 +74,8 @@ export class SandboxService<S = unknown, I = string> {
   private releasing = false;
   /** Copy of storage "releaseFailures", read when a release starts. */
   private releaseFailures: ReleaseFailures | undefined;
+  /** The last failed release did schedule its retry alarm. */
+  private retryScheduled = false;
 
   constructor(private container: ContainerPort<S, I>, private storage: StoragePort,
               private settings: Settings) {
@@ -100,8 +102,14 @@ export class SandboxService<S = unknown, I = string> {
    * sets it right after start().
    */
   async restoreInactivityTimeout(): Promise<void> {
-    if (this.container.running) await this.container.setInactivityTimeout(this.inactivityMs);
+    if (!this.container.running) return;
+    const failures = await this.storage.get<ReleaseFailures>("releaseFailures");
+    await this.container.setInactivityTimeout(
+      failures && failures.count >= RELEASE_MAX_FAILURES ? this.longInactivityMs() : this.inactivityMs);
   }
+
+  /** While backing off after repeated failed saves: past the next try. */
+  private longInactivityMs(): number { return this.idleMs + this.inactivityMs; }
 
   private async config(): Promise<WorkspaceConfig> {
     const value = await this.storage.get<WorkspaceConfig>("config");
@@ -109,8 +117,14 @@ export class SandboxService<S = unknown, I = string> {
     return value;
   }
 
-  /** Synchronous on purpose: callers claim the workspace right after it. */
-  private assertIdle(): void {
+  /**
+   * Synchronous on purpose: callers claim the workspace right after it.
+   * `command` (exec/read) may run while a save is in flight: the save does
+   * not stop compute once activity came in (releaseOnce), so a slow or hung
+   * save cannot lock the Bot out after init let it in (cf-hermes #329).
+   */
+  private assertIdle(kind: "lifecycle" | "command" = "lifecycle"): void {
+    if (kind === "command" && this.releasing && !this.active) return;
     if (this.releasing) {
       // Say why, so the caller can show "saving" rather than a bare 409.
       const failures = this.releaseFailures;
@@ -269,17 +283,28 @@ export class SandboxService<S = unknown, I = string> {
 
   private async release(): Promise<void> {
     this.releasing = true;
-    this.releaseFailures = await this.storage.get<ReleaseFailures>("releaseFailures");
-    try { await this.releaseOnce(); }
-    finally { this.releasing = false; }
+    this.retryScheduled = false;
+    try {
+      this.releaseFailures = await this.storage.get<ReleaseFailures>("releaseFailures");
+      await this.releaseOnce();
+    } finally { this.releasing = false; }
   }
 
   private async releaseOnce(): Promise<void> {
     const config = await this.storage.get<WorkspaceConfig>("config");
     if (!config) return;
+    const startedAt = Date.now();
     try {
       if (config.persistent) {
         await this.save();
+        await this.storage.delete("releaseFailures");
+        const last = await this.storage.get<number>("lastActivity") ?? 0;
+        if (this.active || last >= startedAt) {
+          // Someone came in (init/exec/read) while saving: keep compute; the
+          // snapshot is kept and the next idle alarm saves again.
+          await this.storage.setAlarm(Math.max(last, Date.now()) + this.idleMs);
+          return;
+        }
         await this.container.destroy("Workspace checkpointed");
         await this.storage.deleteAlarm();
         await this.storage.delete("releaseFailures");
@@ -309,14 +334,20 @@ export class SandboxService<S = unknown, I = string> {
       // After RELEASE_MAX_FAILURES, stop retrying every minute: try again one
       // idle period later. Compute is never destroyed unsaved; push the native
       // inactivity stop past the next try so it cannot stop it either.
-      const givingUp = failures.count >= RELEASE_MAX_FAILURES;
+      let givingUp = failures.count >= RELEASE_MAX_FAILURES;
+      if (givingUp) {
+        // Back off only if the native stop is pushed past the next try;
+        // otherwise keep retrying every minute.
+        try { await this.container.setInactivityTimeout(this.longInactivityMs()); }
+        catch { givingUp = false; }
+      }
       const retryMs = givingUp ? this.idleMs : RELEASE_RETRY_MS;
       console.error(givingUp ? "workspace release keeps failing; keeping compute, backing off"
                              : "workspace release failed; keeping compute and retrying",
                     JSON.stringify({ failures: failures.count, since: new Date(failures.firstAt).toISOString(),
                                      reference: cloudflareReference(message), error: failures.error }));
-      if (givingUp) await this.container.setInactivityTimeout(retryMs + this.inactivityMs).catch(() => {});
       await this.storage.setAlarm(now + retryMs);
+      this.retryScheduled = true;
       throw error;
     }
   }
@@ -338,7 +369,8 @@ export class SandboxService<S = unknown, I = string> {
     } catch (error) {
       // We schedule the retry ourselves (backing off after repeated failures);
       // a thrown alarm would add the platform's own fast retries on top.
-      if (this.container.running && await this.storage.get("releaseFailures")) return;
+      // Only when that retry alarm really was set; else let the platform retry.
+      if (this.container.running && this.retryScheduled) return;
       // A thrown alarm is retried by the platform; with no container there is nothing to retry.
       if (!this.container.running) return;
       throw error;
@@ -361,7 +393,7 @@ export class SandboxService<S = unknown, I = string> {
    * errors (rather than ending short) if the file changes while it is read.
    */
   private async readFile(input: ReadRequest): Promise<Response> {
-    this.assertIdle();
+    this.assertIdle("command");
     const active: ActiveCommand = { id: "read", cancelled: false };
     this.active = active; // Same lock as a command: one foreground operation per workspace.
     let handedOff = false;
@@ -425,7 +457,7 @@ export class SandboxService<S = unknown, I = string> {
   }
 
   private async execute(input: ExecRequest): Promise<Response> {
-    this.assertIdle();
+    this.assertIdle("command");
     const active: ActiveCommand = { id: input.request_id, cancelled: false };
     this.active = active; // Reserve synchronously, before any storage/startup awaits.
     try {
