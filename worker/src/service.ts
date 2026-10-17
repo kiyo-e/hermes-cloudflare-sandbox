@@ -306,7 +306,7 @@ export class SandboxService<S = unknown, I = string> {
       } catch { /* starting */ }
       await delay(100);
     }
-    if (!ready && wasRunning) {
+    if (!ready && wasRunning && this.container.running) {
       console.error("running container did not answer a no-op probe");
       throw new ApiError(503, "workspace_unresponsive",
                          "The running container does not respond; delete the workspace to start a new one (its files are lost)");

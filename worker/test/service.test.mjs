@@ -575,3 +575,18 @@ test("a reset whose destroy fails keeps the workspace record and reports the fai
   assert.equal(container.running, false);
   assert.equal(await storage.get("config"), undefined);
 });
+
+test("a container that stops during the readiness wait is not called unresponsive", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  const { service, container } = await setup();
+  await execute(service);
+  const original = container.exec.bind(container);
+  let probes = 0;
+  container.exec = async (command, options) => {
+    if (command[0] === "/bin/true") { if (++probes === 3) container.running = false; throw new Error("not ready"); }
+    return original(command, options);
+  };
+  const result = collect(await service.fetch(request("exec", execution())));
+  for (let i = 0; i < 70; i++) { t.mock.timers.tick(1000); await flush(); }
+  assert.notEqual((await result).at(-1).code, "workspace_unresponsive");
+});
