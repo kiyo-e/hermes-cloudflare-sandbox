@@ -48,17 +48,46 @@ interface ActiveCommand {
   id: string;
   cancelled: boolean;
   process?: ProcessPort;
+  /** Ends the command's stream as workspace_lost without touching the container. */
+  lose?: (message: string) => void;
 }
 interface SnapshotRecord<S> { handle: S; savedAt: number }
 
 /** One durable workspace, with at most one foreground command at a time.
  * The container itself contains no gateway token or Cloudflare account key.
  */
+/** Consecutive failed idle saves before the alarm stops retrying every minute. */
+export const RELEASE_MAX_FAILURES = 5;
+const RELEASE_RETRY_MS = 60_000;
+// Bound for destroying a container on explicit reset; a wedged container must not
+// keep the reset (and the workspace) waiting forever.
+const RESET_DESTROY_MS = 30_000;
+
+interface ReleaseFailures { count: number; firstAt: number; lastAt: number; error: string; reference: string | null }
+
+/** Cloudflare's opaque id in "internal error; reference = …", for support tickets. */
+export function cloudflareReference(message: string): string | null {
+  return /reference\s*=\s*([A-Za-z0-9]+)/.exec(message)?.[1] ?? null;
+}
+
 export class SandboxService<S = unknown, I = string> {
   readonly inactivityMs: number;
   readonly idleMs: number;
   private active: ActiveCommand | null = null;
-  private lifecycleBusy = false;
+  /** The lifecycle transition (init, save/stop, checkpoint) holding the workspace. */
+  private lifecycle: object | null = null;
+  /** Bumped by an explicit reset; work that started before it must not write state. */
+  private generation = 0;
+  /** True while release() (save then stop) is running. */
+  private releasing = false;
+  /** Copy of storage "releaseFailures", read when a release starts. */
+  private releaseFailures: ReleaseFailures | undefined;
+  /** The last failed release did schedule its retry alarm. */
+  private retryScheduled = false;
+  /** Set by touch() while a release runs: someone used the workspace meanwhile. */
+  private usedDuringRelease = false;
+  /** The release decided to stop compute: no new command may start (would be lost). */
+  private stopping = false;
 
   constructor(private container: ContainerPort<S, I>, private storage: StoragePort,
               private settings: Settings) {
@@ -72,6 +101,9 @@ export class SandboxService<S = unknown, I = string> {
   }
 
   private async touch(): Promise<void> {
+    // A command that outlived an explicit deletion must not schedule work for it.
+    if (!await this.storage.get("config")) return;
+    if (this.releasing) this.usedDuringRelease = true;
     await this.storage.put("lastActivity", Date.now());
     await this.storage.setAlarm(Date.now() + this.idleMs);
   }
@@ -85,8 +117,14 @@ export class SandboxService<S = unknown, I = string> {
    * sets it right after start().
    */
   async restoreInactivityTimeout(): Promise<void> {
-    if (this.container.running) await this.container.setInactivityTimeout(this.inactivityMs);
+    if (!this.container.running) return;
+    const failures = await this.storage.get<ReleaseFailures>("releaseFailures");
+    await this.container.setInactivityTimeout(
+      failures && failures.count >= RELEASE_MAX_FAILURES ? this.longInactivityMs() : this.inactivityMs);
   }
+
+  /** While backing off after repeated failed saves: past the next try. */
+  private longInactivityMs(): number { return this.idleMs + this.inactivityMs; }
 
   private async config(): Promise<WorkspaceConfig> {
     const value = await this.storage.get<WorkspaceConfig>("config");
@@ -94,15 +132,60 @@ export class SandboxService<S = unknown, I = string> {
     return value;
   }
 
-  private assertIdle(): void {
-    if (this.active || this.lifecycleBusy) throw new ApiError(409, "workspace_busy", "Workspace is busy");
+  /**
+   * Synchronous on purpose: callers claim the workspace right after it.
+   * `command` (exec/read) may run while a save is in flight: the save does
+   * not stop compute once activity came in (releaseOnce), so a slow or hung
+   * save cannot lock the client out after init let it in.
+   */
+  private assertIdle(kind: "lifecycle" | "command" = "lifecycle"): void {
+    if (kind === "command" && this.releasing && !this.stopping && !this.active) return;
+    if (this.releasing) {
+      // Say why, so the caller can show "saving" rather than a bare 409.
+      const failures = this.releaseFailures;
+      throw new ApiError(409, "workspace_saving", failures
+        ? `Workspace is being saved; the last ${failures.count} save(s) failed`
+        : "Workspace is being saved", {
+        release_failures: failures?.count ?? 0, reference: failures?.reference ?? null,
+      });
+    }
+    if (this.active || this.lifecycle) throw new ApiError(409, "workspace_busy", "Workspace is busy");
   }
 
   private async exclusive<T>(fn: () => Promise<T>): Promise<T> {
     this.assertIdle();
-    this.lifecycleBusy = true;
+    const token = {};
+    this.lifecycle = token;
     try { return await fn(); }
-    finally { this.lifecycleBusy = false; }
+    finally { if (this.lifecycle === token) this.lifecycle = null; }
+  }
+
+  /** Explicit deletion always wins: it is the way out of a wedged workspace, so it
+   * does not wait for a save or a command that may never finish.
+   * Work that was in flight sees the bumped generation and writes no state after.
+   */
+  private async discard(): Promise<void> {
+    this.generation++;
+    const active = this.active;
+    if (active) { active.cancelled = true; active.lose?.("Workspace was deleted during the command"); }
+    this.active = null;
+    this.lifecycle = null;
+    this.releasing = false;
+    this.stopping = false;
+    try {
+      await bounded(this.container.destroy("Explicit workspace deletion"), RESET_DESTROY_MS,
+                    () => new Error("destroy hung"));
+    } catch (error) {
+      console.error("workspace delete: destroy failed",
+                    error instanceof Error ? error.message : String(error));
+    }
+    // Forget the workspace only once its container is gone: a fresh init on a
+    // container that still runs would reuse the old filesystem and processes.
+    if (this.container.running) {
+      throw new ApiError(503, "reset_failed", "The container could not be stopped; retry the delete");
+    }
+    await this.storage.deleteAlarm();
+    await this.storage.deleteAll();
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -111,12 +194,28 @@ export class SandboxService<S = unknown, I = string> {
       if (action === "status") {
         const config = await this.config();
         const snapshot = await this.storage.get<SnapshotRecord<S>>("snapshot");
-        return json({ config, running: this.container.running, busy: !!this.active || this.lifecycleBusy,
-                      snapshot_saved_at: snapshot?.savedAt ?? null });
+        const failures = await this.storage.get<ReleaseFailures>("releaseFailures");
+        return json({ config, running: this.container.running, busy: !!this.active || !!this.lifecycle,
+                      snapshot_saved_at: snapshot?.savedAt ?? null, saving: this.releasing,
+                      release_failures: failures?.count ?? 0, release_reference: failures?.reference ?? null });
       }
       const body = await readJson(request);
       if (action === "init") {
         const config = workspaceConfig(body, this.settings);
+        if (this.releasing) {
+          // An idle save is in flight (and may hang or keep failing). Do not
+          // lock the caller out: record activity so the alarm stops trying to
+          // stop compute, and let the save finish on its own. Compute is kept
+          // if it fails; if it succeeds the next command boots from the
+          // snapshot. Either way no data is lost.
+          const existing = await this.storage.get<WorkspaceConfig>("config");
+          if (!existing) throw new ApiError(409, "workspace_saving", "Workspace is being saved");
+          if (JSON.stringify(existing) !== JSON.stringify(config)) {
+            throw new ApiError(409, "config_conflict", "Existing workspace has different settings; use a new identity");
+          }
+          await this.touch();
+          return json({ ok: true, running: this.container.running, saving: true });
+        }
         return await this.exclusive(async () => {
           if (!Object.prototype.hasOwnProperty.call(this.container.images, config.image)) {
             throw new ApiError(400, "image_not_found", "Named image was not deployed");
@@ -151,12 +250,8 @@ export class SandboxService<S = unknown, I = string> {
       }
       if (action === "reset") {
         if (body.confirm !== true) throw new ApiError(400, "confirmation_required", "Send confirm: true to discard the workspace");
-        return await this.exclusive(async () => {
-          await this.container.destroy("Explicit workspace deletion");
-          await this.storage.deleteAlarm();
-          await this.storage.deleteAll();
-          return json({ ok: true });
-        });
+        await this.discard();
+        return json({ ok: true });
       }
       throw new ApiError(404, "not_found", "Not found");
     } catch (error) {
@@ -165,6 +260,10 @@ export class SandboxService<S = unknown, I = string> {
   }
 
   private async ensureRunning(config: WorkspaceConfig): Promise<void> {
+    // A container that is already running should answer a no-op at once. If it
+    // does not, it is wedged, not starting: say so, so the caller can tell the user
+    // to delete the workspace instead of waiting for a start that never comes.
+    const wasRunning = this.container.running;
     if (!this.container.running) {
       const snapshot = await this.storage.get<SnapshotRecord<S>>("snapshot");
       const booted = await this.storage.get<boolean>("booted");
@@ -207,12 +306,22 @@ export class SandboxService<S = unknown, I = string> {
       } catch { /* starting */ }
       await delay(100);
     }
+    if (!ready && wasRunning && this.container.running) {
+      console.error("running container did not answer a no-op probe");
+      throw new ApiError(503, "workspace_unresponsive",
+                         "The running container does not respond; delete the workspace to start a new one (its files are lost)");
+    }
     if (!ready) throw new ApiError(503, "startup_timeout", "Container did not become ready");
     const mkdir = await withinStartup(this.container.exec(["/bin/mkdir", "-p", "--", config.cwd], { stdout: "ignore", stderr: "ignore" }));
     if (await withinStartup(mkdir.exitCode) !== 0) throw new ApiError(400, "invalid_cwd", "Working directory is not writable");
   }
 
-  private async save(): Promise<void> {
+  /** Save a snapshot. `generation` is the workspace the caller started with: a
+   * reset in between (even during sync) makes the save give up, so it never
+   * snapshots or stops a fresh workspace that reuses the same id.
+   */
+  private async save(generation = this.generation): Promise<void> {
+    const deleted = () => new ApiError(409, "workspace_missing", "Workspace was deleted while saving");
     if (!this.container.running) {
       if (!await this.storage.get("snapshot") && await this.storage.get("booted")) {
         throw new ApiError(409, "workspace_lost", "Container stopped without a checkpoint");
@@ -221,25 +330,55 @@ export class SandboxService<S = unknown, I = string> {
     }
     const sync = await this.container.exec(["/bin/sync"], { stdout: "ignore", stderr: "ignore" });
     if (await sync.exitCode !== 0) throw new ApiError(503, "snapshot_failed", "Filesystem sync failed");
+    if (generation !== this.generation) throw deleted();
     const handle = await this.container.snapshotContainer({ name: `hermes-${Date.now()}` });
+    // The workspace was deleted while saving: do not bring its files back.
+    if (generation !== this.generation) throw deleted();
     // Critical ordering: persist the opaque handle before stopping compute.
     await this.storage.put<SnapshotRecord<S>>("snapshot", { handle, savedAt: Date.now() });
   }
 
   private async release(): Promise<void> {
+    const generation = this.generation;
+    this.releasing = true;
+    this.retryScheduled = false;
+    this.usedDuringRelease = false;
+    try {
+      this.releaseFailures = await this.storage.get<ReleaseFailures>("releaseFailures");
+      await this.releaseOnce(generation);
+    } finally {
+      // A reset already cleared these; do not touch a later release's flags.
+      if (generation === this.generation) { this.releasing = false; this.stopping = false; }
+    }
+  }
+
+  private async releaseOnce(generation: number): Promise<void> {
     const config = await this.storage.get<WorkspaceConfig>("config");
     if (!config) return;
     try {
       if (config.persistent) {
-        await this.save();
+        await this.save(generation);
+        await this.storage.delete("releaseFailures");
+        if (this.active || this.usedDuringRelease) {
+          // Someone came in (init/exec/read) while saving: keep compute; the
+          // snapshot is kept and the next idle alarm saves again.
+          await this.storage.setAlarm(Date.now() + this.idleMs);
+          return;
+        }
+        // Decided: from here a new command would run on compute about to go.
+        this.stopping = true;
         await this.container.destroy("Workspace checkpointed");
         await this.storage.deleteAlarm();
+        await this.storage.delete("releaseFailures");
       } else {
+        this.stopping = true;
         await this.container.destroy("Ephemeral workspace released");
         await this.storage.deleteAlarm();
         await this.storage.deleteAll();
       }
     } catch (error) {
+      // Deleted while saving: the deletion already cleared everything; write nothing.
+      if (generation !== this.generation) throw error;
       if (!this.container.running) {
         // Nothing is left to checkpoint; retrying would wake the object every minute forever.
         console.error("workspace release failed with no running container; not retrying",
@@ -248,15 +387,39 @@ export class SandboxService<S = unknown, I = string> {
         throw error;
       }
       // A failed snapshot must NOT fall through to destroy(). Keep data, retry the alarm.
-      console.error("workspace release failed; keeping compute and retrying", error instanceof Error ? error.message : String(error));
-      await this.storage.setAlarm(Date.now() + 60_000);
+      const message = error instanceof Error ? error.message : String(error);
+      const prev = await this.storage.get<ReleaseFailures>("releaseFailures");
+      const now = Date.now();
+      const failures: ReleaseFailures = {
+        count: (prev?.count ?? 0) + 1, firstAt: prev?.firstAt ?? now, lastAt: now,
+        error: message.slice(0, 500), reference: cloudflareReference(message) ?? prev?.reference ?? null,
+      };
+      await this.storage.put("releaseFailures", failures);
+      this.releaseFailures = failures;
+      // After RELEASE_MAX_FAILURES, stop retrying every minute: try again one
+      // idle period later. Compute is never destroyed unsaved; push the native
+      // inactivity stop past the next try so it cannot stop it either.
+      let givingUp = failures.count >= RELEASE_MAX_FAILURES;
+      if (givingUp) {
+        // Back off only if the native stop is pushed past the next try;
+        // otherwise keep retrying every minute.
+        try { await this.container.setInactivityTimeout(this.longInactivityMs()); }
+        catch { givingUp = false; }
+      }
+      const retryMs = givingUp ? this.idleMs : RELEASE_RETRY_MS;
+      console.error(givingUp ? "workspace release keeps failing; keeping compute, backing off"
+                             : "workspace release failed; keeping compute and retrying",
+                    JSON.stringify({ failures: failures.count, since: new Date(failures.firstAt).toISOString(),
+                                     reference: cloudflareReference(message), error: failures.error }));
+      await this.storage.setAlarm(now + retryMs);
+      this.retryScheduled = true;
       throw error;
     }
   }
 
   async alarm(): Promise<void> {
-    if (this.active || this.lifecycleBusy) {
-      await this.storage.setAlarm(Date.now() + 60_000);
+    if (this.active || this.lifecycle) {
+      await this.storage.setAlarm(Date.now() + RELEASE_RETRY_MS);
       return;
     }
     if (!await this.storage.get("config")) return;
@@ -269,6 +432,10 @@ export class SandboxService<S = unknown, I = string> {
     try {
       await this.exclusive(() => this.release());
     } catch (error) {
+      // We schedule the retry ourselves (backing off after repeated failures);
+      // a thrown alarm would add the platform's own fast retries on top.
+      // Only when that retry alarm really was set; else let the platform retry.
+      if (this.container.running && this.retryScheduled) return;
       // A thrown alarm is retried by the platform; with no container there is nothing to retry.
       if (!this.container.running) return;
       throw error;
@@ -291,7 +458,7 @@ export class SandboxService<S = unknown, I = string> {
    * errors (rather than ending short) if the file changes while it is read.
    */
   private async readFile(input: ReadRequest): Promise<Response> {
-    this.assertIdle();
+    this.assertIdle("command");
     const active: ActiveCommand = { id: "read", cancelled: false };
     this.active = active; // Same lock as a command: one foreground operation per workspace.
     let handedOff = false;
@@ -355,7 +522,7 @@ export class SandboxService<S = unknown, I = string> {
   }
 
   private async execute(input: ExecRequest): Promise<Response> {
-    this.assertIdle();
+    this.assertIdle("command");
     const active: ActiveCommand = { id: input.request_id, cancelled: false };
     this.active = active; // Reserve synchronously, before any storage/startup awaits.
     try {
@@ -401,6 +568,7 @@ export class SandboxService<S = unknown, I = string> {
     const aborted = new Promise<never>((_, reject) => { wakeAbort = () => reject(new ApiError(499, "client_disconnected", "Client disconnected")); });
     // Mark handled immediately; it can fire before the pump reaches Promise.race.
     void aborted.catch(() => {});
+    const generation = this.generation;
     return new ReadableStream<Uint8Array>({
       start: controller => {
         let closed = false;
@@ -415,6 +583,7 @@ export class SandboxService<S = unknown, I = string> {
         let markLost!: (message: string) => void;
         const lost = new Promise<never>((_, reject) => {
           markLost = message => reject(new ApiError(409, "workspace_lost", message));
+          active.lose = markLost;
           lostTimer = setInterval(() => {
             if (!this.container.running) markLost("Container stopped during the command");
           }, LOST_POLL_MS);
@@ -423,7 +592,7 @@ export class SandboxService<S = unknown, I = string> {
         const startLiveness = () => {
           let probing = false, misses = 0;
           livenessTimer = setInterval(() => {
-            if (probing || !this.container.running) return;
+            if (probing || !this.container.running || generation !== this.generation) return;
             probing = true;
             void (async () => {
               try {
@@ -433,7 +602,9 @@ export class SandboxService<S = unknown, I = string> {
                 await bounded(probe.exitCode, deadline - Date.now(), () => new Error("probe did not finish"));
                 misses = 0;
               } catch {
-                if (++misses < LIVENESS_FAILURES || !this.container.running) return;
+                // The probe can outlive its command: never destroy for a command that has ended.
+                if (++misses < LIVENESS_FAILURES || !this.container.running || generation !== this.generation
+                    || this.active !== active) return;
                 console.error("container unresponsive during a command; destroying", JSON.stringify({ request_id: input.request_id }));
                 active.cancelled = true;
                 try {
@@ -529,7 +700,8 @@ export class SandboxService<S = unknown, I = string> {
             send({ type: "exit", exit_code: results[0] });
           } catch (error) {
             // A dead container has no process left to stop; do not wait for one.
-            if (active.process && this.container.running) {
+            // After an explicit deletion the container may already be a new workspace's: leave it.
+            if (active.process && this.container.running && generation === this.generation) {
               try { active.process.kill(15); } catch { /* process already gone */ }
               // Kill escalation applies to failed output/streams as well as explicit cancel.
               const process = active.process;

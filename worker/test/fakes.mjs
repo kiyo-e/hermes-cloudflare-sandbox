@@ -9,14 +9,17 @@ export class MemoryStorage {
   log = [];
   alarm = null;
   failSnapshotPut = false;
-  async get(key) { return structuredClone(this.data.get(key)); }
+  async get(key) { if (key === this.failGet) throw new Error("storage get failed"); return structuredClone(this.data.get(key)); }
   async put(key, value) {
     this.log.push(`put:${key}`);
     if (key === "snapshot" && this.failSnapshotPut) throw new Error("storage unavailable");
     this.data.set(key, structuredClone(value));
   }
-  async setAlarm(value) { this.alarm = value; }
+  failSetAlarm = false;
+  failGet = null;
+  async setAlarm(value) { if (this.failSetAlarm) throw new Error("alarm unavailable"); this.alarm = value; }
   async deleteAlarm() { this.alarm = null; }
+  async delete(key) { return this.data.delete(key); }
   async deleteAll() { this.data.clear(); }
 }
 
@@ -79,7 +82,9 @@ export class FakeContainer {
   readers = [];
   stdin = null;
   onSnapshot = null;
+  failInactivity = false;
   async setInactivityTimeout(ms) {
+    if (this.failInactivity) throw new Error("inactivity unavailable");
     // Mirrors the native API, which rejects this before start().
     if (!this.running) throw new Error("The container has not been started");
     this.inactivity = ms;
@@ -108,10 +113,11 @@ export class FakeContainer {
   async snapshotContainer(options) {
     this.log.push("snapshot");
     this.onSnapshot?.();
-    if (this.failSnapshot) throw new Error("snapshot failed");
+    if (this.snapshotGate) await this.snapshotGate;
+    if (this.failSnapshot) throw new Error(this.snapshotError ?? "snapshot failed");
     return { id: "opaque-snapshot", name: options.name };
   }
-  async destroy(reason) { this.log.push("destroy"); this.reason = reason; this.running = false; }
+  async destroy(reason) { this.log.push("destroy"); if (this.destroyGate) await this.destroyGate; this.reason = reason; this.running = false; }
 }
 
 export const request = (action, body = {}, method = "POST") => new Request(`https://internal/${action}`, {

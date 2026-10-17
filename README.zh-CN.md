@@ -107,6 +107,8 @@ python scripts/smoke.py --live
 
 如果容器在还没有任何 snapshot 时丢失，Worker 不会创建空的工作区，而是返回 `workspace_lost`。请使用新的工作区名称。
 
+如果容器仍在运行但不再响应，命令会在大约 1 分钟后以 `workspace_unresponsive` 失败。等待无法恢复。请使用新的工作区名称；无响应工作区中的文件无法读取。
+
 ## 配置
 
 | 设置 | 含义 |
