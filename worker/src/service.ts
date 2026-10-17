@@ -76,6 +76,10 @@ export class SandboxService<S = unknown, I = string> {
   private releaseFailures: ReleaseFailures | undefined;
   /** The last failed release did schedule its retry alarm. */
   private retryScheduled = false;
+  /** Set by touch() while a release runs: someone used the workspace meanwhile. */
+  private usedDuringRelease = false;
+  /** The release decided to stop compute: no new command may start (would be lost). */
+  private stopping = false;
 
   constructor(private container: ContainerPort<S, I>, private storage: StoragePort,
               private settings: Settings) {
@@ -89,6 +93,7 @@ export class SandboxService<S = unknown, I = string> {
   }
 
   private async touch(): Promise<void> {
+    if (this.releasing) this.usedDuringRelease = true;
     await this.storage.put("lastActivity", Date.now());
     await this.storage.setAlarm(Date.now() + this.idleMs);
   }
@@ -124,7 +129,7 @@ export class SandboxService<S = unknown, I = string> {
    * save cannot lock the Bot out after init let it in (cf-hermes #329).
    */
   private assertIdle(kind: "lifecycle" | "command" = "lifecycle"): void {
-    if (kind === "command" && this.releasing && !this.active) return;
+    if (kind === "command" && this.releasing && !this.stopping && !this.active) return;
     if (this.releasing) {
       // Say why, so the caller can show "saving" rather than a bare 409.
       const failures = this.releaseFailures;
@@ -284,31 +289,33 @@ export class SandboxService<S = unknown, I = string> {
   private async release(): Promise<void> {
     this.releasing = true;
     this.retryScheduled = false;
+    this.usedDuringRelease = false;
     try {
       this.releaseFailures = await this.storage.get<ReleaseFailures>("releaseFailures");
       await this.releaseOnce();
-    } finally { this.releasing = false; }
+    } finally { this.releasing = false; this.stopping = false; }
   }
 
   private async releaseOnce(): Promise<void> {
     const config = await this.storage.get<WorkspaceConfig>("config");
     if (!config) return;
-    const startedAt = Date.now();
     try {
       if (config.persistent) {
         await this.save();
         await this.storage.delete("releaseFailures");
-        const last = await this.storage.get<number>("lastActivity") ?? 0;
-        if (this.active || last >= startedAt) {
+        if (this.active || this.usedDuringRelease) {
           // Someone came in (init/exec/read) while saving: keep compute; the
           // snapshot is kept and the next idle alarm saves again.
-          await this.storage.setAlarm(Math.max(last, Date.now()) + this.idleMs);
+          await this.storage.setAlarm(Date.now() + this.idleMs);
           return;
         }
+        // Decided: from here a new command would run on compute about to go.
+        this.stopping = true;
         await this.container.destroy("Workspace checkpointed");
         await this.storage.deleteAlarm();
         await this.storage.delete("releaseFailures");
       } else {
+        this.stopping = true;
         await this.container.destroy("Ephemeral workspace released");
         await this.storage.deleteAlarm();
         await this.storage.deleteAll();

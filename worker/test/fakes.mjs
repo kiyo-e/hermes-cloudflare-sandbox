@@ -117,7 +117,7 @@ export class FakeContainer {
     if (this.failSnapshot) throw new Error(this.snapshotError ?? "snapshot failed");
     return { id: "opaque-snapshot", name: options.name };
   }
-  async destroy(reason) { this.log.push("destroy"); this.reason = reason; this.running = false; }
+  async destroy(reason) { this.log.push("destroy"); if (this.destroyGate) await this.destroyGate; this.reason = reason; this.running = false; }
 }
 
 export const request = (action, body = {}, method = "POST") => new Request(`https://internal/${action}`, {

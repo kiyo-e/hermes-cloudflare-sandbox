@@ -428,3 +428,16 @@ test("a re-created object restores the long inactivity timeout after repeated fa
   await recreated.restoreInactivityTimeout();
   assert.ok(container.inactivity > recreated.inactivityMs);
 });
+
+test("once the save decided to stop compute, a new command is refused with workspace_saving", async () => {
+  const { service, container, storage } = await setup();
+  await execute(service);
+  await idle(storage);
+  let open; container.destroyGate = new Promise(r => { open = r; });
+  const alarm = service.alarm().catch(() => {});
+  while (!container.log.includes("destroy")) await new Promise(r => setTimeout(r, 1));
+  const res = await service.fetch(request("exec", execution()));
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).error.code, "workspace_saving");
+  open(); await alarm;
+});

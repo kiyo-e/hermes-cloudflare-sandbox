@@ -98,7 +98,7 @@ error also carries `release_failures` (consecutive failed saves) and `reference`
 (the last Cloudflare error reference, for support). `init` is not refused during
 an idle save: it records activity and answers `{"ok":true,"saving":true}`, so the
 alarm stops trying to stop compute; `exec` and file reads also run during a
-save, and a save that sees activity keeps compute (the snapshot is kept). A failed save never destroys compute; the
+save, and a save that sees activity keeps compute (the snapshot is kept). Once a save has decided to stop compute, new commands get `workspace_saving` until it is gone. A failed save never destroys compute; the
 alarm retries every minute and, after `RELEASE_MAX_FAILURES` consecutive failures
 (`worker/src/service.ts`), once per idle period, pushing the native inactivity
 stop past the next try (only if that succeeds; else it stays at one minute, and a
