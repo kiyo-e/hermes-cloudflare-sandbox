@@ -316,7 +316,7 @@ test("an idle workspace is not probed", async t => {
   assert.equal(container.commands.filter(c => c.command[0] === "/bin/true").length, probes);
 });
 
-// --- a release that keeps failing must not lock the workspace (cf-hermes #329) ---
+// --- a release that keeps failing must not lock the workspace ---
 async function idle(storage) { await storage.put("lastActivity", Date.now() - 3_600_000); }
 
 test("init during a failing idle save records activity instead of 409, and keeps compute", async () => {
@@ -401,7 +401,7 @@ test("after RELEASE_MAX_FAILURES the alarm backs off to the idle period and keep
   assert.equal(await storage.get("releaseFailures"), undefined);
 });
 
-// --- review 1 of the #329 fix ---
+// --- saves racing with commands, storage and timeout failures ---
 test("after init during a hanging save, exec runs, and the finished save does not stop compute", async () => {
   const { service, container, storage } = await setup();
   await execute(service);

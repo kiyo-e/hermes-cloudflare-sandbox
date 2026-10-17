@@ -136,7 +136,7 @@ export class SandboxService<S = unknown, I = string> {
    * Synchronous on purpose: callers claim the workspace right after it.
    * `command` (exec/read) may run while a save is in flight: the save does
    * not stop compute once activity came in (releaseOnce), so a slow or hung
-   * save cannot lock the Bot out after init let it in (cf-hermes #329).
+   * save cannot lock the client out after init let it in.
    */
   private assertIdle(kind: "lifecycle" | "command" = "lifecycle"): void {
     if (kind === "command" && this.releasing && !this.stopping && !this.active) return;
@@ -161,7 +161,7 @@ export class SandboxService<S = unknown, I = string> {
   }
 
   /** Explicit deletion always wins: it is the way out of a wedged workspace, so it
-   * does not wait for a save or a command that may never finish (cf-hermes #329).
+   * does not wait for a save or a command that may never finish.
    * Work that was in flight sees the bumped generation and writes no state after.
    */
   private async discard(): Promise<void> {
@@ -202,7 +202,7 @@ export class SandboxService<S = unknown, I = string> {
           // lock the caller out: record activity so the alarm stops trying to
           // stop compute, and let the save finish on its own. Compute is kept
           // if it fails; if it succeeds the next command boots from the
-          // snapshot. Either way no data is lost (cf-hermes #329).
+          // snapshot. Either way no data is lost.
           const existing = await this.storage.get<WorkspaceConfig>("config");
           if (!existing) throw new ApiError(409, "workspace_saving", "Workspace is being saved");
           if (JSON.stringify(existing) !== JSON.stringify(config)) {
