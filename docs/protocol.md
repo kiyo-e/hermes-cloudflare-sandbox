@@ -109,7 +109,8 @@ only when its retry alarm was set. `GET` status adds `saving`, `release_failures
 
 `DELETE` is always accepted, even during a save or a command: it is the way out
 of a wedged workspace. A running command ends as `workspace_lost`, and a save in
-flight does not bring the deleted files back.
+flight does not bring the deleted files back. If the container cannot be stopped, `DELETE` returns
+503 `reset_failed` and keeps the workspace; retry it.
 
 Before a command runs, the Worker checks that the container answers. A cold or
 restored start that does not become ready within 60 s is `startup_timeout`. A

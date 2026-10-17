@@ -176,8 +176,13 @@ export class SandboxService<S = unknown, I = string> {
       await bounded(this.container.destroy("Explicit workspace deletion"), RESET_DESTROY_MS,
                     () => new Error("destroy hung"));
     } catch (error) {
-      console.error("workspace delete: destroy failed; discarding metadata anyway",
+      console.error("workspace delete: destroy failed",
                     error instanceof Error ? error.message : String(error));
+    }
+    // Forget the workspace only once its container is gone: a fresh init on a
+    // container that still runs would reuse the old filesystem and processes.
+    if (this.container.running) {
+      throw new ApiError(503, "reset_failed", "The container could not be stopped; retry the delete");
     }
     await this.storage.deleteAlarm();
     await this.storage.deleteAll();
@@ -597,7 +602,9 @@ export class SandboxService<S = unknown, I = string> {
                 await bounded(probe.exitCode, deadline - Date.now(), () => new Error("probe did not finish"));
                 misses = 0;
               } catch {
-                if (++misses < LIVENESS_FAILURES || !this.container.running || generation !== this.generation) return;
+                // The probe can outlive its command: never destroy for a command that has ended.
+                if (++misses < LIVENESS_FAILURES || !this.container.running || generation !== this.generation
+                    || this.active !== active) return;
                 console.error("container unresponsive during a command; destroying", JSON.stringify({ request_id: input.request_id }));
                 active.cancelled = true;
                 try {

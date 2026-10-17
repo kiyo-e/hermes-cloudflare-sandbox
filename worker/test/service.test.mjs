@@ -538,3 +538,40 @@ test("a save whose sync outlives a reset does not touch the next workspace with 
   assert.equal(container.log.filter(x => x === "snapshot").length, snapshots, "the old save takes no snapshot");
   assert.equal(await storage.get("snapshot"), undefined);
 });
+
+test("a liveness probe that outlives its command does not destroy the workspace", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const { service, container } = await setup();
+  const pending = pendingProcess();
+  container.processes.push(pending);
+  const response = await service.fetch(request("exec", execution({ timeout: 900 })));
+  const reader = response.body.getReader();
+  await reader.read(); // started
+  const original = container.exec.bind(container);
+  container.exec = async (command, options) =>
+    command[0] === "/bin/true" ? new Promise(() => {}) : original(command, options); // probes hang
+  const advance = async ms => { for (let i = 0; i < ms / 1000; i++) { t.mock.timers.tick(1000); await flush(); } };
+  await advance(LIVENESS_INTERVAL_MS + LIVENESS_TIMEOUT_MS + 1000); // first miss
+  await advance(LIVENESS_INTERVAL_MS - LIVENESS_TIMEOUT_MS); // second probe in flight
+  pending.finish(0); // the command ends while that probe still waits
+  const events = await drain(reader);
+  assert.equal(events.at(-1).type, "exit");
+  await advance(LIVENESS_TIMEOUT_MS + 1000); // the stale probe gives up
+  assert.equal(container.log.includes("destroy"), false, "a finished command's probe must not destroy the workspace");
+  assert.equal(container.running, true);
+});
+
+test("a reset whose destroy fails keeps the workspace record and reports the failure", async () => {
+  const { service, container, storage } = await setup();
+  await execute(service);
+  container.destroy = async () => { throw new Error("destroy failed"); }; // container keeps running
+  const res = await service.fetch(request("reset", { confirm: true }, "DELETE"));
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).error.code, "reset_failed");
+  assert.ok(await storage.get("config"), "not forgotten while the old container still runs");
+  // A retry is accepted (not busy) and completes once destroy works.
+  container.destroy = FakeContainer.prototype.destroy.bind(container);
+  assert.equal((await service.fetch(request("reset", { confirm: true }, "DELETE"))).status, 200);
+  assert.equal(container.running, false);
+  assert.equal(await storage.get("config"), undefined);
+});
