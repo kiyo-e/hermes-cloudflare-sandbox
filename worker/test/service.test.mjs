@@ -357,8 +357,9 @@ test("reset is accepted while a command hangs, and the command ends as lost", as
   assert.equal(container.starts.at(-1).image, "sha256:example-image");
 });
 
-test("repeated save failures back off instead of holding the workspace every minute", async () => {
+test("repeated save failures back off instead of holding the workspace every minute", async t => {
   const { service, container, storage } = await setup();
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() }); // exact waits: no clock drift between calls
   await execute(service);
   container.failSnapshot = true;
   const waits = [];
@@ -368,8 +369,7 @@ test("repeated save failures back off instead of holding the workspace every min
     await service.alarm(); // resolves: the retry is scheduled here, not by a thrown alarm
     waits.push(storage.alarm - before);
   }
-  for (let i = 1; i < waits.length; i++) assert.ok(waits[i] >= waits[i - 1], `waits grow: ${waits}`);
-  assert.ok(waits[0] <= 61_000 && waits.at(-1) >= 15 * 60_000 - 1_000 && waits.at(-1) <= 15 * 60_000 + 1_000, `waits: ${waits}`);
+  assert.deepEqual(waits, [1, 2, 4, 8, 15, 15].map(m => m * 60_000));
   assert.equal(container.running, true, "files are kept while saving fails");
   const status = await (await service.fetch(request("status", {}, "GET"))).json();
   assert.equal(status.save_failures, 6);
